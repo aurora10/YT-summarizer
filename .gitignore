@@ -1,8 +1,5 @@
 .env
-
 .dist
 .build
-
 .venv
-
-.app,spec
+.app.spec
