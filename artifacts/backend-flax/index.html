@@ -1,0 +1,77 @@
+<!-- index.html -->
+<!DOCTYPE html>
+<html>
+<head>
+   <title>LLM Chat</title>
+</head>
+<body>
+    <div id="chat-container">
+      <div id="chat-log"></div>
+      <input type="text" id="user-input" placeholder="Type your message...">
+      <button id="send-button">Send</button>
+    </div>
+
+    <script>
+      const chatLog = document.getElementById("chat-log");
+      const userInput = document.getElementById("user-input");
+      const sendButton = document.getElementById("send-button");
+      let conversationHistory = [];
+      let transcript = "";
+
+      function appendMessage(sender, message) {
+        const messageElement = document.createElement("p");
+        messageElement.textContent = `${sender}: ${message}`;
+        chatLog.appendChild(messageElement);
+      }
+
+      function fetchTranscript(){
+           //Use fetch or a different method to obtain the transcript. Here's an example with a prompt.
+          transcript = prompt("Enter the transcript of the video:");
+          if(!transcript){
+              appendMessage("Error", "No transcript was given.")
+          }
+
+      }
+
+     sendButton.addEventListener("click", async () => {
+         const userMessage = userInput.value.trim();
+         if (userMessage === "") return;
+         userInput.value = "";
+
+         appendMessage("You", userMessage);
+
+         const payload = {
+             "transcript": transcript,
+             "user_input": userMessage,
+             "conversation_history": conversationHistory,
+           }
+
+         try {
+           const response = await fetch("http://127.0.0.1:5000/chat", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(payload),
+           });
+             const data = await response.json();
+
+           if(data.error){
+             appendMessage("Error", data.error)
+           }
+           else{
+              appendMessage("LLM", data.llm_response);
+             conversationHistory = data.conversation_history; // Update history
+           }
+
+
+         } catch (error) {
+            appendMessage("Error", `Error communicating with backend ${error}`);
+         }
+       });
+
+        fetchTranscript();
+
+    </script>
+</body>
+</html>
