@@ -11,13 +11,13 @@ a = Analysis(
     datas=[
         ('templates', 'templates'),
         ('static', 'static'),
-         ('.env', '.')
+         ('.env', '.') #include .env file
     ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['multiprocessing'], #add multiprocessing here
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

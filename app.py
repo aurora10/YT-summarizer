@@ -10,7 +10,8 @@ from flask_cors import CORS
 import markdown
 
 # Load environment variables from .env file if present
-load_dotenv()
+#load_dotenv()
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
 
 
 app = Flask(__name__)
