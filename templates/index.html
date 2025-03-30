@@ -8,13 +8,13 @@
 </head>
 <body>
     <div class="container">
-      <div class="header">
-        <h1>YouTube Chat</h1>
-        <form method="post" style="display: inline-block;">
-          <input type="hidden" name="clear_chat" value="true">
-          <button type="submit" class="clear-button">Clear Chat</button>
-      </form>
-      </div>
+        <div class="header">
+            <h1>YouTube Chat</h1>
+            <form method="post" style="display: inline-block;">
+                <input type="hidden" name="clear_chat" value="true">
+                <button type="submit" class="clear-button">Clear Chat</button>
+            </form>
+        </div>
         <form id="chat-form" method="post">
             <label for="video_url">YouTube Video URL:</label>
             <input type="text" id="video_url" name="video_url" value="{% if video_url %}{{ video_url }}{% endif %}">
@@ -22,12 +22,12 @@
             <input type="hidden" name="previous_video_url" value="{% if previous_video_url %}{{ previous_video_url }}{% endif %}">
             <div id="chat-container">
                 <div id="chat-history">
-                  {% if chat_history %}
-                     {{ chat_history | safe }}
-                  {% endif %}
-                  {% if error %}
-                     {{ error }}
-                  {% endif %}
+                    {% if chat_history %}
+                        {{ chat_history | safe }}
+                    {% endif %}
+                    {% if error %}
+                        {{ error }}
+                    {% endif %}
                 </div>
                 <input type="hidden" name="chat_history" id="chat-history-input" value="{% if chat_history %}{{ chat_history }}{% endif %}">
                 <div class="input-group">
@@ -39,34 +39,33 @@
     </div>
 
     <script>
-      const form = document.getElementById('chat-form');
-      const chatHistoryDiv = document.getElementById('chat-history');
-      const sendButton = document.getElementById('send-button');
+        const form = document.getElementById('chat-form');
+        const chatHistoryDiv = document.getElementById('chat-history');
+        const sendButton = document.getElementById('send-button');
 
-      
-      form.addEventListener('submit', function(event) {
-        const chatHistory = chatHistoryDiv.innerHTML;
-        document.getElementById('chat-history-input').value = chatHistory;
+        form.addEventListener('submit', function(event) {
+    event.preventDefault(); // Prevent the default form submission
 
-        //Show the loader
-        sendButton.classList.add('loading');
+    const chatHistory = chatHistoryDiv.innerHTML;
+    document.getElementById('chat-history-input').value = chatHistory;
 
-        
-        // After form is submitted, scroll to bottom of chat history
-          setTimeout(function() {
-              chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
-          }, 0);
+    // Show the loader
+    sendButton.classList.add('loading');
 
+    // Delay disabling the button to allow the loader to show
+    setTimeout(function() {
+        sendButton.disabled = true; // Disable the button after a short delay
+    }, 100); // Adjust the delay as needed
 
-        sendButton.disabled = true;
-
-      });
-
-
-      //Initial scroll to bottom
-      window.onload = function() {
-         chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
-      }
+    // Submit the form after a short delay to show the loader
+    setTimeout(function() {
+        form.submit(); // Submit the form programmatically
+    }, 500); // Adjust the delay as needed
+});
+        // Initial scroll to bottom
+        window.onload = function() {
+            chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
+        }
     </script>
 </body>
 </html>
