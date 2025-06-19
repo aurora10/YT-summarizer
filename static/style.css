@@ -38,6 +38,14 @@ body {
   margin-bottom: 25px; /* Increased margin */
   padding-bottom: 20px; /* Increased padding */
   border-bottom: 1px solid #e0e0e0; /* Softer separator */
+  gap: 12px; /* Add space between elements */
+}
+
+/* Button group for header buttons */
+.button-group {
+  display: flex;
+  align-items: center;
+  gap: 12px; /* Space between buttons */
 }
 
 h1 {
@@ -248,6 +256,23 @@ form input[type="text"]:focus {
 
 .clear-button:hover {
   background-color: #da190b; /* Darker red on hover */
+}
+
+/* Expand on Button - Blue style */
+.expand-button {
+  background-color: #2196F3; /* Blue */
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 0.2s ease-in-out;
+  font-size: 0.9em;
+  font-weight: 500;
+}
+
+.expand-button:hover {
+  background-color: #0b7dda; /* Darker blue on hover */
 }
 
 /* Input fields general font size consistency */

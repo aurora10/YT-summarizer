@@ -10,10 +10,13 @@
     <div class="container">
         <div class="header">
             <h1>YouTube Chat</h1>
-            <form method="post" style="display: inline-block;">
-                <input type="hidden" name="clear_chat" value="true">
-                <button type="submit" class="clear-button">Clear Chat</button>
-            </form>
+            <div class="button-group">
+                <button onclick="document.getElementById('user_message').value = 'Expand on:'" class="expand-button">Expand on:</button>
+                <form method="post" style="display: inline-block;">
+                    <input type="hidden" name="clear_chat" value="true">
+                    <button type="submit" class="clear-button">Clear Chat</button>
+                </form>
+            </div>
         </div>
         <form id="chat-form" method="post">
             <label for="video_url">YouTube Video URL:</label>

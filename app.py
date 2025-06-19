@@ -187,7 +187,9 @@ def chat_with_llm(text, user_input, conversation_history, lang_code, api_key=Non
     try:
         genai.configure(api_key=api_key)
         # Consider using gemini-1.5-flash if available/preferred
-        model = genai.GenerativeModel(model_name='gemini-2.0-flash')
+        model = genai.GenerativeModel(
+            model_name='gemini-2.0-flash')
+        # gemini-2.5-pro-preview-05-06 gemini-2.0-flash
 
         retries = 0
         while retries <= max_retries:
@@ -205,7 +207,7 @@ def chat_with_llm(text, user_input, conversation_history, lang_code, api_key=Non
                 if text:
                     prompt_parts.extend([
                         f"The language of the video transcript is '{effective_lang_code}'.",
-                        "Summarize the video transcript using bulet points when fits context and answer the user's question.",
+                        "Summarize the video transcript using bulet points when fits context and answer the user's question. If user asks follow up question and the answer in not found in transcript, then use your own knowlege to answer the follow up question.",
                         language_instruction,  # Reinforce language constraint
                         "\n--- Video Transcript ---",
                         text,
