@@ -8,30 +8,43 @@
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>YouTube Chat</h1>
-            <div class="button-group">
-                <button onclick="document.getElementById('user_message').value = 'Expand on:'" class="expand-button">Expand on:</button>
-                <form method="post" style="display: inline-block;">
-                    <input type="hidden" name="clear_chat" value="true">
-                    <button type="submit" class="clear-button">Clear Chat</button>
-                </form>
-            </div>
-        </div>
+<div class="header">
+    <h1>YouTube Chat</h1>
+    <div class="button-group">
+        <button onclick="document.getElementById('user_message').value = 'Expand on:'" class="expand-button">Expand on:</button>
+        <form method="post" style="display: inline-block;">
+            <input type="hidden" name="clear_chat" value="true">
+            <button type="submit" class="clear-button">Clear Chat</button>
+        </form>
+    </div>
+</div>
+
+<!-- Question Pills Container - Below header with more space -->
+<div id="question-pills-container" style="margin: 20px 0; display: {% if generated_questions %}block{% else %}none{% endif %};">
+    <div style="text-align: center; margin-bottom: 15px; font-weight: bold; font-size: 1.1em;">
+        Suggested Questions
+    </div>
+    <div id="question-pills" style="display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; padding: 20px; background-color: #f8f9fa; border-radius: 12px;">
+        {% for question in generated_questions %}
+            <button class="pill" data-question="{{ question }}" style="margin: 8px; padding: 10px 20px; font-size: 15px;">{{ question }}</button>
+        {% endfor %}
+    </div>
+</div>
         <form id="chat-form" method="post">
             <label for="video_url">YouTube Video URL:</label>
             <input type="text" id="video_url" name="video_url" value="{% if video_url %}{{ video_url }}{% endif %}">
             <input type="hidden" name="video_url_initial" value="{% if video_url %}{{ video_url }}{% endif %}">
             <input type="hidden" name="previous_video_url" value="{% if previous_video_url %}{{ previous_video_url }}{% endif %}">
             <div id="chat-container">
-                <div id="chat-history">
-                    {% if chat_history %}
-                        {{ chat_history | safe }}
-                    {% endif %}
-                    {% if error %}
-                        {{ error }}
-                    {% endif %}
-                </div>
+<div id="chat-history">
+        {% if chat_history %}
+            {{ chat_history | safe }}
+        {% endif %}
+        {% if error %}
+            {{ error }}
+        {% endif %}
+</div>
+
                 <input type="hidden" name="chat_history" id="chat-history-input" value="{% if chat_history %}{{ chat_history }}{% endif %}">
                 <div class="input-group">
                     <input type="text" id="user_message" name="user_message" placeholder="Type your message..." autocomplete="off">
@@ -71,4 +84,20 @@
         }
     </script>
 </body>
+
+<!-- Question Submission Script -->
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const pills = document.querySelectorAll('.pill');
+        
+        // Click handler
+        pills.forEach(pill => {
+            pill.addEventListener('click', function() {
+                const question = this.getAttribute('data-question');
+                document.querySelector('input[name="user_message"]').value = question;
+                document.getElementById('chat-form').submit();
+            });
+        });
+    });
+</script>
 </html>

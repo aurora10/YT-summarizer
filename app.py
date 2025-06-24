@@ -1,4 +1,5 @@
 import yt_dlp
+import json  # Required for parsing transcript JSON
 # Import specific exceptions
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 import google.generativeai as genai
@@ -22,142 +23,80 @@ CORS(app)  # Enable CORS for all routes.
 
 def extract_transcript(youtube_url):
     """
-    Extracts and returns the transcript of a YouTube video, prioritizing English, Russian, and French.
+    Extracts YouTube video transcript using yt-dlp with robust error handling.
 
     Args:
-        youtube_url: The URL of the YouTube video.
+        youtube_url: YouTube video URL
 
     Returns:
-        A tuple containing:
-           - A string representing the transcript or None if no suitable transcript is found
-           - A string representing the language code of the transcript (e.g., 'en', 'ru', 'fr') or None
-           OR if an error occurs:
-           - None
-           - A string containing the error message
+        Tuple: (transcript_text, lang_code) or (None, error_message)
     """
     try:
-        video_id = yt_dlp.YoutubeDL({}).extract_info(  # Pass empty dict to avoid potential config issues
-            youtube_url, download=False)['id']
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        # Configure yt-dlp options for transcript extraction
+        ydl_opts = {
+            'skip_download': True,
+            'writesubtitles': True,
+            'subtitleslangs': ['en', 'ru', 'fr', 'auto'],
+            'subtitlesformat': 'json3',
+            'quiet': False,
+            'no_warnings': False
+        }
 
-        # Prioritize generated transcripts first, then manual
-        available_langs = [t.language_code for t in transcript_list]
-        print(f"Available transcript languages: {available_langs}")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(youtube_url, download=False)
+            video_id = info['id']
+            print(f"Video ID: {video_id}")
 
-        target_langs = ['en', 'ru', 'fr']  # Your preferred languages
+            # Extract available caption languages
+            available_captions = info.get('automatic_captions', {})
+            if not available_captions:
+                available_captions = info.get('subtitles', {})
 
-        transcript = None
-        # Try finding a generated transcript in preferred languages
-        try:
-            transcript = transcript_list.find_generated_transcript(
-                target_langs)
-        except Exception:
-            print(
-                f"Could not find generated transcript in {target_langs}, checking manual...")
+            available_langs = list(available_captions.keys())
+            print(f"Available transcript languages: {available_langs}")
 
-        # If not found, try finding a manually created transcript in preferred languages
-        if not transcript:
-            try:
-                transcript = transcript_list.find_manually_created_transcript(
-                    target_langs)
-            except Exception:
-                print(
-                    f"Could not find manual transcript in {target_langs}, checking any available...")
+            # Try preferred languages in order
+            target_langs = ['en', 'ru', 'fr', 'auto']
+            transcript_text = None
+            lang_code = None
 
-        # If still not found, try *any* available transcript as a last resort
-        # (You might want to remove this block if you ONLY want en/ru/fr)
-        if not transcript:
-            try:
-                # Pick the first available transcript regardless of language
-                transcript = next(iter(transcript_list))
-                print(
-                    f"Falling back to available language: {transcript.language}")
-            except StopIteration:
-                print(
-                    f"No transcripts available at all for video: {youtube_url}")
-                # Return None, specific message or None for generic handling below
-                return None, f"No transcripts available at all for video: {youtube_url}"
-            except Exception as e:
-                print(f"Error getting fallback transcript: {e}")
-                # Return specific error
-                return None, f"Error getting fallback transcript: {e}"
+            for lang in target_langs:
+                if lang in available_captions:
+                    caption_data = available_captions[lang]
+                    if caption_data:
+                        # Get the first caption format (usually json3)
+                        caption_url = caption_data[0]['url']
+                        # Fetch caption content
+                        transcript_text = ydl.urlopen(
+                            caption_url).read().decode('utf-8')
 
-        if not transcript:
-            print(f"No suitable transcripts found for video: {youtube_url}")
-            # Return specific error
-            return None, f"No suitable transcripts found for video: {youtube_url}"
+                        # Parse JSON3 format
+                        try:
+                            transcript_json = json.loads(transcript_text)
+                            events = transcript_json.get('events', [])
+                            segments = []
+                            for event in events:
+                                if 'segs' in event:
+                                    for seg in event['segs']:
+                                        if 'utf8' in seg:
+                                            segments.append(seg['utf8'])
+                            transcript_text = " ".join(segments)
+                            lang_code = lang
+                            print(f"Using transcript language: {lang}")
+                            break
+                        except Exception as e:
+                            print(f"Error parsing transcript JSON: {e}")
+                            continue
 
-        # This block should be correctly indented within the 'try'
-        print(
-            f"Selected transcript language: {transcript.language} ({transcript.language_code})")
-
-        # Isolate the fetch call
-        fetched_transcript = None
-        try:
-            fetched_transcript = transcript.fetch()
-            print(
-                f"Fetched transcript type: {type(fetched_transcript)}, length: {len(fetched_transcript) if isinstance(fetched_transcript, list) else 'N/A'}")
-        except AttributeError as fetch_ae:
-            print(f"AttributeError during transcript.fetch(): {fetch_ae}")
-            # Return specific error related to fetching details
-            return None, f"Error fetching transcript details: {fetch_ae}"
-        except Exception as fetch_e:
-            print(
-                f"Unexpected error during transcript.fetch(): {type(fetch_e).__name__}: {fetch_e}")
-            return None, f"Unexpected error fetching transcript details: {type(fetch_e).__name__}"
-
-        # Explicit loop for processing entries, only if fetch was successful
-        processed_entries = []
-        transcript_text = ""  # Default to empty string
-        if fetched_transcript:
-            # Correctly indented loop
-            for entry in fetched_transcript:
-                # print(f"Processing entry: {entry}, type: {type(entry)}") # Optional detailed debug
-                # Check if the entry object has a 'text' attribute
-                if hasattr(entry, 'text'):
-                    # Access using attribute
-                    processed_entries.append(entry.text)
-                else:
-                    # Log a warning if the format is unexpected (neither dict nor object with text attr)
-                    print(
-                        f"Warning: Skipping unexpected transcript entry format: {entry}")
-            # Join the text *after* the loop finishes
-            transcript_text = " ".join(processed_entries)
-
-            # Check for empty extraction *after* the loop
-            if not transcript_text and fetched_transcript:
-                # Add warning if extraction failed
-                print(
-                    "Warning: Transcript fetched but no text could be extracted from entries.")
-        else:
-            # Handle case where fetch failed or returned None/empty
-            print(
-                "Warning: Fetched transcript was empty or fetch failed, proceeding without text.")
-
-        # Get lang_code regardless of fetch success (might still be useful)
-        lang_code = transcript.language_code
-
-        return transcript_text, lang_code
+            if transcript_text:
+                return transcript_text, lang_code
+            else:
+                return None, "No suitable transcript found for this video"
 
     except yt_dlp.utils.DownloadError as e:
-        print(f"Error fetching video information with yt-dlp: {e}")
-        # Return a more specific error message if possible
         return None, f"yt-dlp error: {e}"
-    except TranscriptsDisabled as e:
-        video_id = e.video_id  # Get video ID from exception
-        print(f"Transcripts are disabled for video {video_id}: {e}")
-        return None, f"Transcripts are disabled for this video ({video_id})."
-    except NoTranscriptFound as e:
-        video_id = e.video_id
-        print(
-            f"No transcript found for video {video_id} in requested languages: {e}")
-        # You might want to list available languages if the exception provides them
-        return None, f"No suitable transcript found for this video ({video_id})."
     except Exception as e:
-        # Catch any other unexpected errors
-        print(
-            f"An unexpected error occurred getting transcript: {type(e).__name__}: {e}")
-        return None, f"An unexpected error occurred: {type(e).__name__}"
+        return None, f"Unexpected error: {type(e).__name__}: {e}"
 
 
 def clean_transcript(transcript):
@@ -311,6 +250,70 @@ def chat_with_llm(text, user_input, conversation_history, lang_code, api_key=Non
 
 # ----- END MODIFIED FUNCTION -----
 
+# ----- NEW FUNCTION FOR QUESTION GENERATION -----
+
+
+def generate_questions_from_transcript(transcript_text, lang_code, api_key=None, max_retries=3, backoff_delay=1):
+    """
+    Generates 4 concise questions (3-4 words) about the video content using Gemini LLM.
+    Returns only the question text without numbering or explanations.
+
+    Args:
+        transcript_text: Cleaned transcript text
+        lang_code: Language code of the transcript
+        api_key: Gemini API key
+        max_retries: Number of retries for API errors
+        backoff_delay: Delay between retries
+
+    Returns:
+        List of 4 questions or None on failure
+    """
+    if not api_key:
+        api_key = os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        print("API key not found for question generation.")
+        return None
+
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(model_name='gemini-2.0-flash')
+
+        # Create specialized prompt
+        prompt = (
+            f"**IMPORTANT: You MUST respond ONLY in the language identified by the code: {lang_code}.**\n"
+            "Analyze the following video transcript and generate exactly 4 concise questions "
+            "that viewers might have about this video. Each question MUST be 3-4 words maximum. "
+            "Format your response as a simple numbered list (1. 2. 3. 4.):\n"
+            "--- TRANSCRIPT START ---\n"
+            f"{transcript_text}\n"
+            "--- TRANSCRIPT END ---"
+        )
+
+        response = model.generate_content(prompt, safety_settings={
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+        })
+
+        if hasattr(response, 'text'):
+            # Extract only the numbered list items
+            lines = response.text.strip().split('\n')
+            questions = []
+            for line in lines:
+                # Match lines that start with a number and period
+                if re.match(r'^\d+\.\s', line):
+                    # Remove numbering and trim
+                    question = re.sub(r'^\d+\.\s*', '', line).strip()
+                    questions.append(question)
+            return questions[:4]  # Return up to 4 valid questions
+        return None
+
+    except Exception as e:
+        print(f"Question generation error: {e}")
+        return None
+# ----- END NEW FUNCTION -----
+
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -366,6 +369,23 @@ def index():
                 transcript = transcript_text
                 lang_code = error_message_or_lang_code  # This is the lang_code on success
                 cleaned_transcript = clean_transcript(transcript)
+
+                # Generate and print questions for new video
+                print("\n" + "="*50)
+                print("Generating questions about this video...")
+                try:
+                    questions = generate_questions_from_transcript(
+                        cleaned_transcript, lang_code)
+                    if questions:
+                        print("\nGenerated Questions:")
+                        for i, q in enumerate(questions, 1):
+                            print(f"{i}. {q}")
+                    else:
+                        print("Question generation failed")
+                except Exception as e:
+                    print(f"Error generating questions: {e}")
+                print("="*50 + "\n")
+
                 # Call LLM with the transcript and user message
                 # Pass empty history for summary
                 response_text = chat_with_llm(
@@ -419,7 +439,8 @@ def index():
                                chat_history=chat_history,
                                video_url=video_url,  # URL currently in the input box
                                previous_video_url=previous_video_url,  # URL associated with the chat history
-                               error=error)
+                               error=error,
+                               generated_questions=questions if is_new_video and questions else [])
 
     # Initial GET request or if POST logic doesn't render
     return render_template("index.html", error=None, chat_history="", video_url="", previous_video_url="")
