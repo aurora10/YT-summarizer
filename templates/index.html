@@ -16,21 +16,25 @@
             <input type="hidden" name="clear_chat" value="true">
             <button type="submit" class="clear-button">Clear Chat</button>
         </form>
+        <form action="/summarize_comments" method="post" style="display: inline-block;">
+            <input type="hidden" name="video_url" value="{% if video_url %}{{ video_url }}{% endif %}">
+            <input type="hidden" name="chat_history" value="{% if chat_history %}{{ chat_history }}{% endif %}">
+            <input type="hidden" name="previous_video_url" value="{% if previous_video_url %}{{ previous_video_url }}{% endif %}">
+            <button type="submit" class="summarize-comments-button">Summarize Comments</button>
+        </form>
     </div>
 </div>
 
 <!-- Question Pills Container - Below header with more space -->
-<div id="question-pills-container" style="margin: 20px 0; display: {% if generated_questions %}block{% else %}none{% endif %};">
-    <div style="text-align: center; margin-bottom: 15px; font-weight: bold; font-size: 1.1em;">
-        Suggested Questions
-    </div>
-    <div id="question-pills" style="display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; padding: 20px; background-color: #f8f9fa; border-radius: 12px;">
+<div id="question-pills-container" style="display: {% if generated_questions %}block{% else %}none{% endif %};">
+    <div class="question-pills-title">Suggested Questions</div>
+    <div id="question-pills">
         {% for question in generated_questions %}
-            <button class="pill" data-question="{{ question }}" style="margin: 8px; padding: 10px 20px; font-size: 15px;">{{ question }}</button>
+            <button class="pill" data-question="{{ question }}">{{ question }}</button>
         {% endfor %}
     </div>
 </div>
-        <form id="chat-form" method="post">
+        <form id="chat-form" method="post" action="/">
             <label for="video_url">YouTube Video URL:</label>
             <input type="text" id="video_url" name="video_url" value="{% if video_url %}{{ video_url }}{% endif %}">
             <input type="hidden" name="video_url_initial" value="{% if video_url %}{{ video_url }}{% endif %}">

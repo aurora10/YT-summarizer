@@ -1,5 +1,9 @@
 import yt_dlp
 import json  # Required for parsing transcript JSON
+import asyncio
+import subprocess
+
+from googleapiclient.discovery import build
 # Import specific exceptions
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 import google.generativeai as genai
@@ -19,6 +23,48 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes.
+
+# Create an API key from your Google Cloud Console
+# Using the provided key for both YouTube Data API and Gemini API for now.
+# In a production environment, these should ideally be separate and loaded from environment variables.
+YOUTUBE_API_KEY = os.environ.get(
+    'YOUTUBE_API_KEY', 'AIzaSyArAlNJkECaEmg4lX0OyvyWIlEFbtLIgzI')
+GOOGLE_API_KEY = os.environ.get(
+    'GOOGLE_API_KEY', 'AIzaSyArAlNJkECaEmg4lX0OyvyWIlEFbtLIgzI')
+
+# Create a directory named 'Comments' if it doesn't exist
+comments_dir = "Comments"
+if not os.path.exists(comments_dir):
+    os.makedirs(comments_dir)
+
+
+def get_comments(video_id):
+    """Fetch comments from YouTube Data API."""
+    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+    comments = []
+
+    results = youtube.commentThreads().list(
+        part="snippet",
+        videoId=video_id,
+        textFormat="plainText",
+        maxResults=100
+    ).execute()
+
+    while results:
+        for item in results['items']:
+            comment = item['snippet']['topLevelComment']['snippet']['textDisplay']
+            comments.append(comment)
+        if 'nextPageToken' in results:
+            results = youtube.commentThreads().list(
+                part="snippet",
+                videoId=video_id,
+                pageToken=results['nextPageToken'],
+                textFormat="plainText",
+                maxResults=100
+            ).execute()
+        else:
+            break
+    return comments
 
 
 def extract_transcript(youtube_url):
@@ -114,7 +160,7 @@ def clean_transcript(transcript):
 def chat_with_llm(text, user_input, conversation_history, lang_code, api_key=None, max_retries=3, backoff_delay=1):
     """Starts a conversational interaction with the LLM, enforcing the specified language."""
     if not api_key:
-        api_key = os.environ.get("GOOGLE_API_KEY")
+        api_key = GOOGLE_API_KEY  # Use the globally defined GOOGLE_API_KEY
     if not api_key:
         raise ValueError("API key not found.")
 
@@ -136,7 +182,6 @@ def chat_with_llm(text, user_input, conversation_history, lang_code, api_key=Non
                 # --- Prompt Modification ---
                 # Construct the core instruction using the effective language code
                 language_instruction = f"**IMPORTANT: You MUST respond ONLY in the language identified by the code: {effective_lang_code}.** Do not use any other language."
-
                 # Base prompt structure
                 prompt_parts = [
                     "You are a helpful assistant."
@@ -171,7 +216,7 @@ def chat_with_llm(text, user_input, conversation_history, lang_code, api_key=Non
                 ])
 
                 prompt = "\n".join(prompt_parts)
-                # print(f"\n--- Sending Prompt to LLM ---\n{prompt}\n--- End Prompt ---") # Optional: for debugging
+                # print(f"\n--- Sending Prompt to LLM---\n{prompt}\n--- End Prompt ---") # Optional: for debugging
 
                 response = model.generate_content(prompt, safety_settings={
                     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
@@ -229,8 +274,7 @@ def chat_with_llm(text, user_input, conversation_history, lang_code, api_key=Non
                         print("Max retries exceeded due to rate limiting.")
                         return "The service is currently busy. Please try again later."
                     print(
-                        f"Rate limit hit. Retrying in {backoff_delay * retries}s... (Attempt {retries}/{max_retries})"
-                    )
+                        f"Rate limit hit. Retrying in {backoff_delay * retries}s... (Attempt {retries}/{max_retries})")
                     time.sleep(backoff_delay * retries)  # Exponential backoff
                 else:
                     # Handle other potential errors
@@ -269,7 +313,7 @@ def generate_questions_from_transcript(transcript_text, lang_code, api_key=None,
         List of 4 questions or None on failure
     """
     if not api_key:
-        api_key = os.environ.get("GOOGLE_API_KEY")
+        api_key = GOOGLE_API_KEY  # Use the globally defined GOOGLE_API_KEY
     if not api_key:
         print("API key not found for question generation.")
         return None
@@ -284,7 +328,7 @@ def generate_questions_from_transcript(transcript_text, lang_code, api_key=None,
             "Analyze the following video transcript and generate exactly 4 concise questions "
             "that viewers might have about this video. Each question MUST be 3-4 words maximum. "
             "Format your response as a simple numbered list (1. 2. 3. 4.):\n"
-            "--- TRANSCRIPT START ---\n"
+            "--- TRANSCRIPT START ---"
             f"{transcript_text}\n"
             "--- TRANSCRIPT END ---"
         )
@@ -314,6 +358,81 @@ def generate_questions_from_transcript(transcript_text, lang_code, api_key=None,
         return None
 # ----- END NEW FUNCTION -----
 
+# ----- NEW FUNCTION FOR SUMMARIZING COMMENTS -----
+
+
+def summarize_text_with_llm(text_to_summarize, prompt_instruction, api_key=None, max_retries=3, backoff_delay=1):
+    """
+    Summarizes provided text using the Gemini LLM based on a given instruction.
+    """
+    if not api_key:
+        api_key = GOOGLE_API_KEY
+    if not api_key:
+        raise ValueError("API key not found for summarization.")
+
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(model_name='gemini-2.0-flash')
+
+        full_prompt = f"""
+        {prompt_instruction}
+
+        Text to summarize:
+        {text_to_summarize}
+        """
+
+        retries = 0
+        while retries <= max_retries:
+            try:
+                response = model.generate_content(full_prompt, safety_settings={
+                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+                })
+
+                if hasattr(response, 'text'):
+                    return response.text
+                elif hasattr(response, "candidates") and response.candidates:
+                    candidate = response.candidates[0]
+                    if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts') and candidate.content.parts:
+                        if hasattr(candidate, "finish_reason") and candidate.finish_reason == 1:
+                            return candidate.content.parts[0].text
+                        else:
+                            print(
+                                f"LLM generation stopped for reason: {candidate.finish_reason}. Safety Ratings: {getattr(candidate, 'safety_ratings', 'N/A')}")
+                            if candidate.finish_reason == 3:  # SAFETY
+                                return "My safety filters prevented me from generating a response to this request."
+                            else:
+                                return f"The response generation stopped unexpectedly (Reason: {candidate.finish_reason})."
+                    else:
+                        print(
+                            f"LLM response candidate lacked valid content parts. Finish Reason: {getattr(candidate, 'finish_reason', 'N/A')}")
+                        return "The LLM generated an empty or invalid response structure."
+                else:
+                    print(f"Unexpected LLM response structure: {response}")
+                    return "The LLM returned an unexpected response format."
+            except Exception as e:
+                if "429" in str(e) or "Resource has been exhausted" in str(e):
+                    retries += 1
+                    if retries > max_retries:
+                        print("Max retries exceeded due to rate limiting.")
+                        return "The service is currently busy. Please try again later."
+                    print(
+                        f"Rate limit hit. Retrying in {backoff_delay * retries}s... (Attempt {retries}/{max_retries})")
+                    time.sleep(backoff_delay * retries)
+                else:
+                    print(
+                        f"An unexpected error occurred during LLM generation: {type(e).__name__}: {e}")
+                    return f"An error occurred while generating the response. Details: {type(e).__name__}"
+        return "Max retries exceeded. The service might be temporarily unavailable or overloaded."
+
+    except Exception as e:
+        print(
+            f"An exception occurred configuring or calling the LLM: {type(e).__name__}: {e}")
+        return f"An error occurred: {type(e).__name__}"
+# ----- END NEW FUNCTION FOR SUMMARIZING COMMENTS -----
+
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -321,6 +440,7 @@ def index():
     chat_history = ""  # Stores the HTML formatted history for display
     video_url = ""
     previous_video_url = ""  # Keep track of the URL processed in the last request
+    questions = []  # Initialize questions to an empty list
 
     if request.method == "POST":
         video_url = request.form.get(
@@ -431,7 +551,8 @@ def index():
             chat_history += f'<div class="message user-message"><span class="role">You:</span> {user_message}</div>\n'
             # Use markdown.markdown for formatting LLM response
             formatted_response = markdown.markdown(response_text)
-            chat_history += f'<div class="message llm-message"><span class="role">LLM:</span> {formatted_response}</div>\n'
+            # Add language metadata to LLM responses
+            chat_history += f'<div class="message llm-message" lang="{lang_code}"><span class="role">LLM:</span> {formatted_response}</div>\n'
 
         # --- Render Template ---
         # Pass the current state back to the template
@@ -444,6 +565,59 @@ def index():
 
     # Initial GET request or if POST logic doesn't render
     return render_template("index.html", error=None, chat_history="", video_url="", previous_video_url="")
+
+
+@app.route("/summarize_comments", methods=["POST"])
+def summarize_comments_route():
+    video_url = request.form.get("video_url", "").strip()
+    chat_history = request.form.get("chat_history", "")
+    previous_video_url = request.form.get("previous_video_url", "")
+    error = None
+    summary_text = None
+
+    if not video_url:
+        error = "Please enter a YouTube video URL."
+    else:
+        try:
+            # Extract video ID from URL
+            video_id_match = re.search(
+                r'(?:v=|\/|watch\?v=)([a-zA-Z0-9_-]{11})', video_url)
+            if not video_id_match:
+                error = "Invalid YouTube URL provided."
+            else:
+                video_id = video_id_match.group(1)
+                print(f"Attempting to fetch comments for video ID: {video_id}")
+                comments = get_comments(video_id)
+
+                if not comments:
+                    error = "No comments found for this video or an error occurred fetching them."
+                else:
+                    # Join comments into a single string for summarization
+                    comments_text = "\n".join(comments)
+                    print(f"Fetched {len(comments)} comments. Summarizing...")
+                    prompt_instruction = "Summarize the following YouTube comments. Focus on common themes, sentiments, and key discussion points. Provide a concise summary in bullet points if appropriate."
+                    summary_text = summarize_text_with_llm(
+                        comments_text, prompt_instruction)
+                    print("Comments summarization complete.")
+
+                    if summary_text:
+                        # Add the summary to the chat history
+                        chat_history += f'<div class="message user-message"><span class="role">You:</span> Summarize comments for {video_url}</div>\n'
+                        formatted_summary = markdown.markdown(summary_text)
+                        chat_history += f'<div class="message llm-message"><span class="role">LLM (Comments Summary):</span> {formatted_summary}</div>\n'
+                    else:
+                        error = "Failed to generate a summary for the comments."
+
+        except Exception as e:
+            error = f"An unexpected error occurred during comment summarization: {e}"
+            print(f"Error in summarize_comments_route: {e}")
+
+    return render_template("index.html",
+                           chat_history=chat_history,
+                           video_url=video_url,
+                           previous_video_url=previous_video_url,
+                           error=error,
+                           generated_questions=[])  # No new questions generated on comment summary
 
 
 if __name__ == "__main__":
