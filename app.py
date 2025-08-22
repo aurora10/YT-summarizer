@@ -1,21 +1,15 @@
 import yt_dlp
 import json  # Required for parsing transcript JSON
-import asyncio
-import subprocess
 
 from googleapiclient.discovery import build
-# Import specific exceptions
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 import google.generativeai as genai
 import os
 from dotenv import load_dotenv
-# from datetime import datetime # Not used currently, can be removed if not needed elsewhere
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
 import markdown
 import re
-# from langdetect import detect # Not used currently, can be removed if not needed elsewhere
 import time
 
 # Load environment variables from .env file if present
@@ -27,10 +21,8 @@ CORS(app)  # Enable CORS for all routes.
 # Create an API key from your Google Cloud Console
 # Using the provided key for both YouTube Data API and Gemini API for now.
 # In a production environment, these should ideally be separate and loaded from environment variables.
-YOUTUBE_API_KEY = os.environ.get(
-    'YOUTUBE_API_KEY', 'AIzaSyArAlNJkECaEmg4lX0OyvyWIlEFbtLIgzI')
-GOOGLE_API_KEY = os.environ.get(
-    'GOOGLE_API_KEY', 'AIzaSyArAlNJkECaEmg4lX0OyvyWIlEFbtLIgzI')
+YOUTUBE_API_KEY = os.environ.get('YOUTUBE_API_KEY')
+GOOGLE_API_KEY = os.environ.get('GOOGLE_API_KEY')
 
 # Create a directory named 'Comments' if it doesn't exist
 comments_dir = "Comments"
@@ -147,13 +139,7 @@ def extract_transcript(youtube_url):
 
 def clean_transcript(transcript):
     """Simple profanity filter (you may need to expand this)."""
-    # Example profanity list, you should expand it
-    profanities = []  # This should be expanded
-    if not profanities:  # Avoid regex error with empty list
-        return transcript
-    cleaned_transcript = re.sub(
-        r'\b(' + '|'.join(profanities) + r')\b', '[REMOVED]', transcript, flags=re.IGNORECASE)
-    return cleaned_transcript
+    return transcript
 
 
 # ----- MODIFIED FUNCTION -----
