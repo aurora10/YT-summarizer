@@ -14,11 +14,12 @@ import os
 import re
 import markdown
 import json
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, session
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
+import hashlib
 
 
 def is_english_text(text):
@@ -74,6 +75,9 @@ except ValueError as e:
     print(f"Error configuring YouTube API: {e}")
 
 app = Flask(__name__)
+app.secret_key = os.environ.get(
+    'FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max request size
 CORS(app)  # Enable CORS for all routes.
 
 # Initialize rate limiter
@@ -90,29 +94,44 @@ if not os.path.exists(comments_dir):
     os.makedirs(comments_dir)
 
 
+def get_session_key(video_url):
+    """Generate a unique session key for a video URL."""
+    if not video_url:
+        return "current"
+    return hashlib.md5(video_url.encode()).hexdigest()
+
+
 @app.route("/", methods=["GET", "POST"])
 # Limit POST requests more strictly
 @limiter.limit("10 per minute", methods=["POST"])
 def index():
     error = None
-    chat_history = ""
-    video_url = ""
-    previous_video_url = ""
     if request.method == "POST":
         video_url = request.form.get("video_url", "").strip()
         user_message = request.form.get("user_message", "").strip()
-        chat_history = request.form.get("chat_history", "")
         clear_chat = request.form.get("clear_chat")
-        previous_video_url = request.form.get("previous_video_url", "")
+
+        # Get current session data
+        current_session_key = session.get('current_session_key', 'default')
+        chat_history = session.get(f'{current_session_key}_chat_history', "")
+        previous_video_url = session.get(
+            f'{current_session_key}_video_url', "")
+        transcript_text = session.get(f'{current_session_key}_transcript', "")
 
         print("\n--- NEW REQUEST ---")
         print(
-            f"FORM DATA: video_url='{video_url}', user_message='{user_message}', previous_video_url='{previous_video_url}', clear_chat='{clear_chat}'")
-
-        transcript_text = request.form.get("transcript_text", "")
+            f"FORM DATA: video_url='{video_url}', user_message='{user_message}', clear_chat='{clear_chat}'")
+        print(
+            f"SESSION: current_key='{current_session_key}', previous_video='{previous_video_url}'")
 
         # --- Input Handling Logic ---
         if clear_chat:
+            # Clear all session data for current video
+            session_key = get_session_key(previous_video_url)
+            session.pop(f'{session_key}_chat_history', None)
+            session.pop(f'{session_key}_video_url', None)
+            session.pop(f'{session_key}_transcript', None)
+            session.pop('current_session_key', None)
             return render_template("index.html", error=None, chat_history="", video_url="", previous_video_url="", transcript_text="")
 
         if user_message and user_message.lower() == "exit":
@@ -126,6 +145,7 @@ def index():
 
         if is_new_video:
             print(f"DEBUG: Processing new video: {video_url}")
+            # Clear chat history for new video
             chat_history = ""
             previous_video_url = video_url
             if not user_message:
@@ -138,15 +158,22 @@ def index():
                 print(
                     f"DEBUG: Transcript extraction failed: {error_message_or_lang_code}")
                 error = error_message_or_lang_code or f"Could not extract transcript for {video_url}."
-                previous_video_url = ""
+                # Keep the existing transcript and video context, only show error
+                # Don't clear previous_video_url or transcript_text - maintain current state
                 lang_code = None
-                transcript_text = ""
             else:
                 transcript_text = transcript_data
                 lang_code = error_message_or_lang_code
                 cleaned_transcript = transcript_text
                 print(
                     f"DEBUG: Transcript extraction successful, length: {len(transcript_text)}")
+
+                # Store transcript and video info in session
+                session_key = get_session_key(video_url)
+                session[f'{session_key}_transcript'] = transcript_text
+                session[f'{session_key}_video_url'] = video_url
+                session[f'{session_key}_chat_history'] = chat_history
+                session['current_session_key'] = session_key
 
                 print("\n" + "="*50)
                 print(
@@ -204,14 +231,35 @@ def index():
             formatted_response = markdown.markdown(response_text)
             chat_history += f'<div class="message llm-message" lang="{lang_code}"><span class="role">LLM:</span> {formatted_response}</div>\n'
 
+        # Update session with latest chat history
+        if previous_video_url:
+            session_key = get_session_key(previous_video_url)
+            session[f'{session_key}_chat_history'] = chat_history
+            session[f'{session_key}_video_url'] = previous_video_url
+            session[f'{session_key}_transcript'] = transcript_text
+            session['current_session_key'] = session_key
+
         return render_template("index.html",
                                chat_history=chat_history,
                                video_url=video_url,
                                previous_video_url=previous_video_url,
                                error=error,
-                               transcript_text=transcript_text)
+                               transcript_text="")  # Empty transcript in form to reduce size
 
-    return render_template("index.html", error=None, chat_history="", video_url="", previous_video_url="")
+    # GET request - load from session if available
+    current_session_key = session.get('current_session_key')
+    if current_session_key:
+        chat_history = session.get(f'{current_session_key}_chat_history', "")
+        previous_video_url = session.get(
+            f'{current_session_key}_video_url', "")
+        return render_template("index.html",
+                               chat_history=chat_history,
+                               video_url="",
+                               previous_video_url=previous_video_url,
+                               error=None,
+                               transcript_text="")
+    else:
+        return render_template("index.html", error=None, chat_history="", video_url="", previous_video_url="", transcript_text="")
 
 
 @app.route("/summarize_comments", methods=["POST"])
@@ -219,10 +267,14 @@ def index():
 @limiter.limit("5 per minute")
 def summarize_comments_route():
     video_url = request.form.get("video_url", "").strip()
-    chat_history = request.form.get("chat_history", "")
-    previous_video_url = request.form.get("previous_video_url", "")
     error = None
     summary_text = None
+
+    # Get current session data
+    current_session_key = session.get('current_session_key', 'default')
+    chat_history = session.get(f'{current_session_key}_chat_history', "")
+    previous_video_url = session.get(f'{current_session_key}_video_url', "")
+    transcript_text = session.get(f'{current_session_key}_transcript', "")
 
     if not video_url:
         error = "Please enter a YouTube video URL."
@@ -249,7 +301,7 @@ def summarize_comments_route():
 
                     # Determine language for comment summarization
                     lang_code = None
-                    # Try to get language from previous video URL first (if it's the same video)
+                    # Try to get language from session first
                     if previous_video_url and previous_video_url == video_url:
                         lang_code = get_language_code(previous_video_url)
 
@@ -290,6 +342,14 @@ def summarize_comments_route():
                         chat_history += f'<div class="message user-message"><span class="role">You:</span> Summarize comments for {video_url}</div>\n'
                         formatted_summary = markdown.markdown(summary_text)
                         chat_history += f'<div class="message llm-message" lang="{lang_code}"><span class="role">LLM (Comments Summary):</span> {formatted_summary}</div>\n'
+
+                        # Update session with latest chat history
+                        if video_url:
+                            session_key = get_session_key(video_url)
+                            session[f'{session_key}_chat_history'] = chat_history
+                            session[f'{session_key}_video_url'] = video_url
+                            session[f'{session_key}_transcript'] = transcript_text
+                            session['current_session_key'] = session_key
                     else:
                         error = "Failed to generate a summary for the comments."
 
@@ -300,7 +360,7 @@ def summarize_comments_route():
     return render_template("index.html",
                            chat_history=chat_history,
                            video_url=video_url,
-                           previous_video_url=previous_video_url,
+                           previous_video_url=video_url,  # Use current video as previous
                            error=error)
 
 
