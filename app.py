@@ -246,16 +246,50 @@ def summarize_comments_route():
                     # Join comments into a single string for summarization
                     comments_text = "\n".join(comments)
                     print(f"Fetched {len(comments)} comments. Summarizing...")
-                    prompt_instruction = "Summarize the following YouTube comments. Focus on common themes, sentiments, and key discussion points. Provide a concise summary in bullet points if appropriate."
+
+                    # Determine language for comment summarization
+                    lang_code = None
+                    # Try to get language from previous video URL first (if it's the same video)
+                    if previous_video_url and previous_video_url == video_url:
+                        lang_code = get_language_code(previous_video_url)
+
+                    # If not available, try to detect from current video
+                    if not lang_code:
+                        lang_code = get_language_code(video_url)
+
+                    # Fallback to English if still not determined
+                    if not lang_code:
+                        lang_code = 'en'
+
+                    print(
+                        f"DEBUG: Using language code for comment summarization: {lang_code}")
+
+                    # Language-specific comment summarization instructions
+                    comment_instructions = {
+                        'en': "Summarize the following YouTube comments. Focus on common themes, sentiments, and key discussion points. Provide a concise summary in bullet points if appropriate.",
+                        'ru': "Обобщите следующие комментарии YouTube. Сосредоточьтесь на общих темах, настроениях и ключевых моментах обсуждения. Предоставьте краткое резюме в виде маркированного списка, если это уместно.",
+                        'fr': "Résumez les commentaires YouTube suivants. Concentrez-vous sur les thèmes communs, les sentiments et les points de discussion clés. Fournissez un résumé concis sous forme de puces si approprié."
+                    }
+
+                    prompt_instruction = comment_instructions.get(
+                        lang_code, comment_instructions['en'])
                     summary_text = summarize_text_with_llm(
-                        comments_text, prompt_instruction)
+                        comments_text, prompt_instruction, lang_code)
+
+                    # If we have Russian language but got English response, force translation
+                    if lang_code == 'ru' and summary_text and is_english_text(summary_text):
+                        print(
+                            "DEBUG: Russian video comments but got English summary, translating to Russian...")
+                        summary_text = translate_text_with_llm(
+                            summary_text, 'ru')
+
                     print("Comments summarization complete.")
 
                     if summary_text:
-                        # Add the summary to the chat history
+                        # Add the summary to the chat history with language code
                         chat_history += f'<div class="message user-message"><span class="role">You:</span> Summarize comments for {video_url}</div>\n'
                         formatted_summary = markdown.markdown(summary_text)
-                        chat_history += f'<div class="message llm-message"><span class="role">LLM (Comments Summary):</span> {formatted_summary}</div>\n'
+                        chat_history += f'<div class="message llm-message" lang="{lang_code}"><span class="role">LLM (Comments Summary):</span> {formatted_summary}</div>\n'
                     else:
                         error = "Failed to generate a summary for the comments."
 
