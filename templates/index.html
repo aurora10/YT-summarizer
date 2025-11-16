@@ -12,11 +12,11 @@
     <h1>YouTube Chat</h1>
     <div class="button-group">
         <button onclick="document.getElementById('user_message').value = 'Expand on:'" class="expand-button">Expand on:</button>
-        <form method="post" style="display: inline-block;">
+        <form method="post" class="inline-form">
             <input type="hidden" name="clear_chat" value="true">
             <button type="submit" class="clear-button">Clear Chat</button>
         </form>
-        <form action="/summarize_comments" method="post" style="display: inline-block;">
+        <form action="/summarize_comments" method="post" class="inline-form">
             <input type="hidden" name="video_url" value="{% if video_url %}{{ video_url }}{% endif %}">
             <input type="hidden" name="chat_history" value="{% if chat_history %}{{ chat_history }}{% endif %}">
             <input type="hidden" name="previous_video_url" value="{% if previous_video_url %}{{ previous_video_url }}{% endif %}">
@@ -25,20 +25,14 @@
     </div>
 </div>
 
-<!-- Question Pills Container - Below header with more space -->
-<div id="question-pills-container" style="display: {% if generated_questions %}block{% else %}none{% endif %};">
-    <div class="question-pills-title">Suggested Questions</div>
-    <div id="question-pills">
-        {% for question in generated_questions %}
-            <button class="pill" data-question="{{ question }}">{{ question }}</button>
-        {% endfor %}
-    </div>
-</div>
+
         <form id="chat-form" method="post" action="/">
             <label for="video_url">YouTube Video URL:</label>
             <input type="text" id="video_url" name="video_url" value="{% if video_url %}{{ video_url }}{% endif %}">
             <input type="hidden" name="video_url_initial" value="{% if video_url %}{{ video_url }}{% endif %}">
             <input type="hidden" name="previous_video_url" value="{% if previous_video_url %}{{ previous_video_url }}{% endif %}">
+            <input type="hidden" name="transcript_text" value="{% if transcript_text %}{{ transcript_text }}{% endif %}">
+            
             <div id="chat-container">
 <div id="chat-history">
         {% if chat_history %}
@@ -89,19 +83,5 @@
     </script>
 </body>
 
-<!-- Question Submission Script -->
-<script>
-    document.addEventListener('DOMContentLoaded', function() {
-        const pills = document.querySelectorAll('.pill');
-        
-        // Click handler
-        pills.forEach(pill => {
-            pill.addEventListener('click', function() {
-                const question = this.getAttribute('data-question');
-                document.querySelector('input[name="user_message"]').value = question;
-                document.getElementById('chat-form').submit();
-            });
-        });
-    });
-</script>
+
 </html>
