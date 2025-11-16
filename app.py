@@ -1,3 +1,15 @@
+from llm_utils import (
+    chat_with_llm,
+    summarize_text_with_llm,
+    translate_text_with_llm,
+    configure_genai,
+)
+from youtube_utils import (
+    get_comments,
+    extract_transcript,
+    configure_youtube_api,
+    get_language_code,
+)
 import os
 import re
 import markdown
@@ -8,17 +20,41 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
 
-from llm_utils import (
-    chat_with_llm,
-    summarize_text_with_llm,
-    configure_genai,
-)
-from youtube_utils import (
-    get_comments,
-    extract_transcript,
-    configure_youtube_api,
-    get_language_code,
-)
+
+def is_english_text(text):
+    """
+    Simple heuristic to detect if text is primarily in English.
+    Returns True if text appears to be English, False otherwise.
+    """
+    if not text:
+        return False
+
+    # Common English words and patterns
+    english_indicators = [
+        'the', 'and', 'is', 'in', 'to', 'of', 'a', 'that', 'it', 'with',
+        'for', 'as', 'was', 'on', 'are', 'this', 'be', 'by', 'have', 'from'
+    ]
+
+    text_lower = text.lower()
+
+    # Count English indicator words
+    english_count = sum(1 for word in english_indicators if word in text_lower)
+
+    # Check for Cyrillic characters (Russian)
+    cyrillic_chars = re.findall(r'[а-яА-Я]', text)
+    cyrillic_ratio = len(cyrillic_chars) / max(len(text), 1)
+
+    # If there are many Cyrillic characters, it's likely Russian
+    if cyrillic_ratio > 0.1:
+        return False
+
+    # If we found a reasonable number of English words, consider it English
+    if english_count >= 3:
+        return True
+
+    # Default to English if we can't determine
+    return True
+
 
 # Load environment variables from .env file if present
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
@@ -116,9 +152,18 @@ def index():
                 print(
                     "DEBUG: Attempting to generate summary...")
                 try:
-                    print(f"DEBUG: Calling summarize_text_with_llm...")
+                    print(
+                        f"DEBUG: Calling summarize_text_with_llm with lang_code: {lang_code}")
                     response_text = summarize_text_with_llm(
-                        cleaned_transcript, "Summarize this video")
+                        cleaned_transcript, "Summarize this video", lang_code)
+
+                    # If we have Russian transcript but got English response, force translation
+                    if lang_code == 'ru' and response_text and is_english_text(response_text):
+                        print(
+                            "DEBUG: Russian video but got English response, translating to Russian...")
+                        response_text = translate_text_with_llm(
+                            response_text, 'ru')
+
                     if not response_text:
                         print("DEBUG: Summary generation failed.")
                         error = "Failed to generate summary from the transcript."

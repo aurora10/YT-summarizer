@@ -176,25 +176,47 @@ def download_and_parse_subtitle(url):
     """
     Download subtitle from URL and parse it.
     """
-    try:
-        print(f"DEBUG: Downloading subtitle from: {url}")
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
+    max_retries = 3
+    backoff_factor = 2
 
-        if url.endswith('.vtt'):
-            return parse_vtt_captions(response.text)
-        elif url.endswith('.srt'):
-            return parse_srt_captions(response.text)
-        else:
-            # Try to detect format
-            if 'WEBVTT' in response.text:
+    for attempt in range(max_retries):
+        try:
+            print(
+                f"DEBUG: Downloading subtitle from: {url} (attempt {attempt + 1}/{max_retries})")
+            response = requests.get(url, timeout=15)
+            response.raise_for_status()
+
+            if url.endswith('.vtt'):
                 return parse_vtt_captions(response.text)
-            else:
+            elif url.endswith('.srt'):
                 return parse_srt_captions(response.text)
+            else:
+                # Try to detect format
+                if 'WEBVTT' in response.text:
+                    return parse_vtt_captions(response.text)
+                else:
+                    return parse_srt_captions(response.text)
 
-    except Exception as e:
-        print(f"DEBUG: Error downloading/parsing subtitle: {e}")
-        return None
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 429:  # Rate limited
+                if attempt < max_retries - 1:
+                    wait_time = backoff_factor ** attempt
+                    print(
+                        f"DEBUG: Rate limit hit, waiting {wait_time} seconds before retry...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    print(
+                        f"DEBUG: Max retries exceeded for rate limiting: {e}")
+                    return None
+            else:
+                print(f"DEBUG: HTTP error downloading subtitle: {e}")
+                return None
+        except Exception as e:
+            print(f"DEBUG: Error downloading/parsing subtitle: {e}")
+            return None
+
+    return None
 
 
 def get_comments(video_id):
@@ -242,11 +264,65 @@ def get_comments(video_id):
     return comments, None
 
 
+def detect_video_language(available_captions):
+    """
+    Analyzes available captions to determine the video's primary language.
+    Returns the most likely language code.
+    """
+    if not available_captions:
+        return 'en'  # Default to English
+
+    # Look for language patterns that indicate primary language
+    caption_languages = list(available_captions.keys())
+    print(f"DEBUG: Available caption languages: {caption_languages}")
+
+    # Check for original/origin language indicators
+    for lang in caption_languages:
+        if '-orig' in lang:
+            base_lang = lang.split('-')[0]
+            print(
+                f"DEBUG: Found original language indicator: {lang} -> {base_lang}")
+            return base_lang
+
+    # Check for common language patterns
+    # If we have both 'en' and 'ru', prefer the one that appears first in YouTube's ordering
+    # YouTube typically lists the primary language first in automatic captions
+
+    # Count occurrences to find the most common language
+    lang_counts = {}
+    for lang in caption_languages:
+        base_lang = lang.split('-')[0]  # Handle 'en-orig', 'ru', etc.
+        lang_counts[base_lang] = lang_counts.get(base_lang, 0) + 1
+
+    # If we have clear primary language indicators, use them
+    if 'en' in lang_counts and 'ru' in lang_counts:
+        # If English appears before Russian in the list, it's likely an English video
+        en_index = caption_languages.index(
+            'en') if 'en' in caption_languages else float('inf')
+        ru_index = caption_languages.index(
+            'ru') if 'ru' in caption_languages else float('inf')
+
+        if en_index < ru_index:
+            print("DEBUG: English appears before Russian, likely English video")
+            return 'en'
+        else:
+            print("DEBUG: Russian appears before English, likely Russian video")
+            return 'ru'
+
+    # Default to most common language, or English if uncertain
+    if lang_counts:
+        primary_lang = max(lang_counts.items(), key=lambda x: x[1])[0]
+        print(f"DEBUG: Using most common language: {primary_lang}")
+        return primary_lang
+
+    return 'en'
+
+
 def extract_transcript(youtube_url, timeout_seconds=30):
     """
     Extracts YouTube video transcript using yt-dlp as primary method,
     with YouTube Data API as fallback.
-    It will attempt to fetch English, then Russian, then French transcripts.
+    It will detect the video's primary language and extract transcripts accordingly.
     """
     print(f"DEBUG: extract_transcript called for URL: {youtube_url}")
 
@@ -254,26 +330,116 @@ def extract_transcript(youtube_url, timeout_seconds=30):
         print(f"DEBUG: Returning cached transcript for {youtube_url}")
         return transcript_cache[youtube_url]
 
-    # Define the order of preferred languages
-    preferred_languages = ['en', 'ru', 'fr']
-
     def _extract_with_timeout():
         """Inner function to handle transcript extraction with timeout."""
         # First attempt: yt-dlp method
         print("DEBUG: Attempting transcript extraction via yt-dlp...")
-        for lang in preferred_languages:
+
+        try:
+            # First, get video info to detect language
+            ydl_opts_info = {
+                'skip_download': True,
+                'quiet': True,
+                'no_warnings': True,
+                'noplaylist': True,
+                'ignoreerrors': True,
+            }
+
+            with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
+                result = ydl.extract_info(youtube_url, download=False)
+
+                # Detect video language from available captions
+                available_captions = result.get('automatic_captions', {})
+                if not available_captions:
+                    available_captions = result.get('subtitles', {})
+
+                detected_language = detect_video_language(available_captions)
+                print(f"DEBUG: Detected video language: {detected_language}")
+
+                # Set preferred languages based on detection
+                if detected_language == 'ru':
+                    # Russian video, try Russian first
+                    preferred_languages = ['ru', 'en']
+                else:
+                    # Non-Russian video, try English first
+                    preferred_languages = ['en', 'ru']
+
+                print(f"DEBUG: Using language priority: {preferred_languages}")
+
+                for lang in preferred_languages:
+                    print(
+                        f"DEBUG: Attempting to fetch transcript in '{lang}' using yt-dlp...")
+
+                    ydl_opts = {
+                        'skip_download': True,
+                        'writesubtitles': True,
+                        'writeautomaticsub': True,
+                        'subtitleslangs': [lang],
+                        'subtitlesformat': 'vtt',
+                        'quiet': True,
+                        'no_warnings': True,
+                        'noplaylist': True,
+                        'ignoreerrors': True,
+                    }
+
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl_lang:
+                        result_lang = ydl_lang.extract_info(
+                            youtube_url, download=False)
+
+                        transcript_text = None
+
+                        # Check manual subtitles first
+                        if 'subtitles' in result_lang and result_lang['subtitles']:
+                            if lang in result_lang['subtitles']:
+                                subtitles = result_lang['subtitles'][lang]
+                                if subtitles:
+                                    for subtitle in subtitles:
+                                        if subtitle.get('ext') == 'vtt':
+                                            transcript_text = download_and_parse_subtitle(
+                                                subtitle['url'])
+                                            if transcript_text:
+                                                print(
+                                                    f"DEBUG: Successfully extracted {lang} manual transcript")
+                                                transcript_cache[youtube_url] = (
+                                                    transcript_text, lang)
+                                                return transcript_text, lang
+
+                        # Check automatic captions
+                        if not transcript_text and 'automatic_captions' in result_lang and result_lang['automatic_captions']:
+                            if lang in result_lang['automatic_captions']:
+                                captions = result_lang['automatic_captions'][lang]
+                                if captions:
+                                    for caption in captions:
+                                        if caption.get('ext') == 'vtt':
+                                            transcript_text = download_and_parse_subtitle(
+                                                caption['url'])
+                                            if transcript_text:
+                                                print(
+                                                    f"DEBUG: Successfully extracted {lang} auto-generated transcript")
+                                                transcript_cache[youtube_url] = (
+                                                    transcript_text, lang)
+                                                return transcript_text, lang
+
+                        print(
+                            f"DEBUG: No transcript found for {lang} using yt-dlp")
+
+        except Exception as e:
             print(
-                f"DEBUG: Attempting to fetch transcript in '{lang}' using yt-dlp...")
+                f"DEBUG: Error in language detection or initial extraction: {type(e).__name__}: {e}")
+
+        # Fallback: Try standard languages in order
+        print("DEBUG: Language-based extraction failed, trying fallback order...")
+        fallback_languages = ['en', 'ru', 'fr']
+
+        for lang in fallback_languages:
+            print(f"DEBUG: Fallback attempt for '{lang}'...")
             try:
-                # Try multiple yt-dlp configurations to extract transcripts
-                # First attempt: Direct subtitle extraction
                 ydl_opts = {
                     'skip_download': True,
                     'writesubtitles': True,
-                    'writeautomaticsub': True,  # Include auto-generated subtitles
-                    # Try target lang + English as fallback
-                    'subtitleslangs': [lang, 'en'],
-                    'subtitlesformat': 'vtt',  # Use vtt format which is easier to parse
+                    'writeautomaticsub': True,
+                    'subtitleslangs': [lang],
+                    'subtitlesformat': 'vtt',
                     'quiet': True,
                     'no_warnings': True,
                     'noplaylist': True,
@@ -282,77 +448,47 @@ def extract_transcript(youtube_url, timeout_seconds=30):
 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     result = ydl.extract_info(youtube_url, download=False)
-                    print(
-                        f"DEBUG: yt-dlp result keys: {list(result.keys()) if result else 'No result'}")
 
-                    # Method 1: Check if subtitles are directly available in the result
                     transcript_text = None
 
-                    # Check manual subtitles first
+                    # Check manual subtitles
                     if 'subtitles' in result and result['subtitles']:
-                        print(
-                            f"DEBUG: Manual subtitles available: {list(result['subtitles'].keys())}")
-                        # Try preferred language first, then English
-                        for try_lang in [lang, 'en']:
-                            if try_lang in result['subtitles']:
-                                subtitles = result['subtitles'][try_lang]
-                                if subtitles:
-                                    # Get the first available subtitle format
-                                    for subtitle in subtitles:
-                                        if subtitle.get('ext') == 'vtt':
-                                            transcript_text = download_and_parse_subtitle(
-                                                subtitle['url'])
-                                            if transcript_text:
-                                                print(
-                                                    f"DEBUG: Successfully extracted {try_lang} manual transcript")
-                                                transcript_cache[youtube_url] = (
-                                                    transcript_text, try_lang)
-                                                return transcript_text, try_lang
+                        if lang in result['subtitles']:
+                            subtitles = result['subtitles'][lang]
+                            if subtitles:
+                                for subtitle in subtitles:
+                                    if subtitle.get('ext') == 'vtt':
+                                        transcript_text = download_and_parse_subtitle(
+                                            subtitle['url'])
+                                        if transcript_text:
+                                            print(
+                                                f"DEBUG: Successfully extracted {lang} manual transcript (fallback)")
+                                            transcript_cache[youtube_url] = (
+                                                transcript_text, lang)
+                                            return transcript_text, lang
 
-                    # Method 2: Check automatic captions
+                    # Check automatic captions
                     if not transcript_text and 'automatic_captions' in result and result['automatic_captions']:
-                        print(
-                            f"DEBUG: Automatic captions available: {list(result['automatic_captions'].keys())}")
-                        for try_lang in [lang, 'en']:
-                            if try_lang in result['automatic_captions']:
-                                captions = result['automatic_captions'][try_lang]
-                                if captions:
-                                    for caption in captions:
-                                        if caption.get('ext') == 'vtt':
-                                            transcript_text = download_and_parse_subtitle(
-                                                caption['url'])
-                                            if transcript_text:
-                                                print(
-                                                    f"DEBUG: Successfully extracted {try_lang} auto-generated transcript")
-                                                transcript_cache[youtube_url] = (
-                                                    transcript_text, try_lang)
-                                                return transcript_text, try_lang
+                        if lang in result['automatic_captions']:
+                            captions = result['automatic_captions'][lang]
+                            if captions:
+                                for caption in captions:
+                                    if caption.get('ext') == 'vtt':
+                                        transcript_text = download_and_parse_subtitle(
+                                            caption['url'])
+                                        if transcript_text:
+                                            print(
+                                                f"DEBUG: Successfully extracted {lang} auto-generated transcript (fallback)")
+                                            transcript_cache[youtube_url] = (
+                                                transcript_text, lang)
+                                            return transcript_text, lang
 
-                    # Method 3: Try to extract from description or other metadata as last resort
-                    if not transcript_text and 'description' in result and result['description']:
-                        # Use video description as fallback (very basic, but better than nothing)
-                        description = result['description']
-                        if len(description) > 100:  # Only use if it's substantial
-                            print(
-                                f"DEBUG: Using video description as fallback transcript")
-                            transcript_cache[youtube_url] = (description, 'en')
-                            return description, 'en'
-
-                    print(
-                        f"DEBUG: No transcript found for {lang} using yt-dlp")
-
-            except yt_dlp.utils.DownloadError as e:
-                # This error is often verbose and can indicate that no transcript is available in the requested language.
-                print(f"DEBUG: yt-dlp download error for lang '{lang}': {e}")
-                # Continue to the next language
-                continue
             except Exception as e:
                 print(
-                    f"DEBUG: An unexpected error occurred for lang '{lang}': {type(e).__name__}: {e}")
-                # Continue to the next language
+                    f"DEBUG: Error in fallback extraction for {lang}: {type(e).__name__}: {e}")
                 continue
 
-        # Second attempt: YouTube Data API method (if configured)
+        # Final fallback: YouTube Data API
         print("DEBUG: yt-dlp method failed, attempting YouTube Data API fallback...")
         try:
             transcript_text, lang_code = extract_transcript_youtube_api(
@@ -367,7 +503,7 @@ def extract_transcript(youtube_url, timeout_seconds=30):
                 f"DEBUG: YouTube Data API fallback also failed: {type(e).__name__}: {e}")
 
         print("DEBUG: No suitable transcript found using any method.")
-        return None, "No suitable transcript found for this video in English, Russian, or French."
+        return None, "No suitable transcript found for this video."
 
     # Apply timeout using threading.Timer for cross-platform compatibility
     import threading
