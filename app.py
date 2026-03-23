@@ -1,5 +1,7 @@
 import uuid
 import yt_dlp
+import urllib.request
+import json
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 import google.generativeai as genai
 import os
@@ -25,10 +27,83 @@ def get_session_data(uid):
         SESSIONS[uid] = {"chat_session": None, "video_url": None, "transcript": None, "lang_code": None}
     return SESSIONS[uid]
 
+def fetch_and_parse_subs(sub_list):
+    for sub in sub_list:
+        if sub.get('ext') == 'json3':
+            url = sub['url']
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read())
+            text_chunks = []
+            for event in data.get('events', []):
+                if 'segs' in event:
+                    for seg in event['segs']:
+                        text_chunks.append(seg.get('utf8', ''))
+            val = "".join(text_chunks).replace('\n', ' ').replace('  ', ' ').strip()
+            if val: return val
+            
+    for sub in sub_list:
+        if sub.get('ext') == 'vtt':
+            url = sub['url']
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req) as response:
+                data = response.read().decode('utf-8')
+            lines = data.split('\n')
+            text_chunks = []
+            for line in lines:
+                if '-->' in line or line.startswith('WEBVTT') or line.strip() == '' or line.startswith('Kind:') or line.startswith('Language:') or line.startswith('Style:'):
+                    continue
+                clean_line = re.sub(r'<[^>]+>', '', line)
+                if clean_line.strip():
+                    text_chunks.append(clean_line.strip())
+            val = " ".join(text_chunks).replace('  ', ' ').strip()
+            if val: return val
+    return None
+
+def yt_dlp_fallback(youtube_url, target_langs):
+    cookie_path = os.path.join(os.path.dirname(__file__), 'cookies.txt')
+    ydl_opts = {
+        'quiet': True,
+        'skip_download': True,
+    }
+    if os.path.exists(cookie_path):
+        ydl_opts['cookiefile'] = cookie_path
+        
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(youtube_url, download=False)
+        
+    subs = info.get('subtitles', {})
+    auto_subs = info.get('automatic_captions', {})
+    
+    for lang in target_langs:
+        if lang in subs:
+            parsed = fetch_and_parse_subs(subs[lang])
+            if parsed: return parsed, lang
+            
+    for lang in target_langs:
+        if lang in auto_subs:
+            parsed = fetch_and_parse_subs(auto_subs[lang])
+            if parsed: return parsed, lang
+            
+    if subs:
+        lang = next(iter(subs))
+        parsed = fetch_and_parse_subs(subs[lang])
+        if parsed: return parsed, lang
+        
+    if auto_subs:
+        lang = next(iter(auto_subs))
+        parsed = fetch_and_parse_subs(auto_subs[lang])
+        if parsed: return parsed, lang
+        
+    return None, None
+
 def extract_transcript(youtube_url):
     try:
-        ydl_opts = {'proxy': ''}
-        video_id = yt_dlp.YoutubeDL(ydl_opts).extract_info(youtube_url, download=False)['id']
+        match = re.search(r'(?:https?:\/\/)?(?:[a-zA-Z0-9_-]+\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})', youtube_url)
+        if match:
+            video_id = match.group(1)
+        else:
+            return None, "Invalid YouTube URL format."
         
         # Support both old v0.x and new v1.x API paradigms
         if hasattr(YouTubeTranscriptApi, 'list_transcripts'):
@@ -59,12 +134,16 @@ def extract_transcript(youtube_url):
                 return None, f"Error getting fallback transcript: {e}"
 
         if not transcript:
+            yt_text, yt_lang = yt_dlp_fallback(youtube_url, target_langs)
+            if yt_text: return yt_text, yt_lang
             return None, f"No suitable transcripts found for video: {youtube_url}"
 
         lang_code = transcript.language_code
         try:
             fetched_transcript = transcript.fetch()
         except Exception as e:
+            yt_text, yt_lang = yt_dlp_fallback(youtube_url, target_langs)
+            if yt_text: return yt_text, yt_lang
             return None, f"Error fetching transcript details: {e}"
 
         processed_entries = []
@@ -76,6 +155,8 @@ def extract_transcript(youtube_url):
                     processed_entries.append(entry['text'])
             transcript_text = " ".join(processed_entries)
         else:
+            yt_text, yt_lang = yt_dlp_fallback(youtube_url, target_langs)
+            if yt_text: return yt_text, yt_lang
             return None, "Transcript was empty."
 
         return transcript_text, lang_code
@@ -83,6 +164,11 @@ def extract_transcript(youtube_url):
     except yt_dlp.utils.DownloadError as e:
         return None, f"yt-dlp error: {e}"
     except Exception as e:
+        try:
+            yt_text, yt_lang = yt_dlp_fallback(youtube_url, ['en', 'ru', 'fr'])
+            if yt_text: return yt_text, yt_lang
+        except Exception:
+            pass
         return None, f"An error occurred: {type(e).__name__}: {e}"
 
 def clean_transcript(transcript):
