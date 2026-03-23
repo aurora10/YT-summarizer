@@ -3,71 +3,195 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YouTube Chat</title>
+    <title>YouTube Chat & Summarizer</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <!-- Include Marked.js for markdown rendering on client -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        .system-message .role {
+            font-weight: bold;
+            color: #d9534f; /* Bootstrap's brand-danger */
+        }
+        .process-button {
+            padding: 8px 16px;
+            background-color: #5cb85c;
+            color: white;
+            border: none;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .process-button:disabled {
+            background-color: #a5d8a5;
+            cursor: not-allowed;
+        }
+    </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
             <h1>YouTube Chat</h1>
             <div class="button-group">
-                <button onclick="document.getElementById('user_message').value = 'Expand on:'" class="expand-button">Expand on:</button>
-                <form method="post" style="display: inline-block;">
-                    <input type="hidden" name="clear_chat" value="true">
-                    <button type="submit" class="clear-button">Clear Chat</button>
-                </form>
+                <button id="btn-expand" class="expand-button">Expand on:</button>
+                <button id="btn-clear" class="clear-button">Clear Chat</button>
             </div>
         </div>
-        <form id="chat-form" method="post">
+        
+        <div class="input-form">
             <label for="video_url">YouTube Video URL:</label>
-            <input type="text" id="video_url" name="video_url" value="{% if video_url %}{{ video_url }}{% endif %}">
-            <input type="hidden" name="video_url_initial" value="{% if video_url %}{{ video_url }}{% endif %}">
-            <input type="hidden" name="previous_video_url" value="{% if previous_video_url %}{{ previous_video_url }}{% endif %}">
-            <div id="chat-container">
-                <div id="chat-history">
-                    {% if chat_history %}
-                        {{ chat_history | safe }}
-                    {% endif %}
-                    {% if error %}
-                        {{ error }}
-                    {% endif %}
-                </div>
-                <input type="hidden" name="chat_history" id="chat-history-input" value="{% if chat_history %}{{ chat_history }}{% endif %}">
-                <div class="input-group">
-                    <input type="text" id="user_message" name="user_message" placeholder="Type your message..." autocomplete="off">
-                    <button type="submit" id="send-button">Send</button>
-                </div>
+            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                <input type="text" id="video_url" name="video_url" placeholder="https://youtube.com/watch?v=..." style="flex: 1; padding: 8px;">
+                <button id="btn-process" class="process-button">Summarize Video</button>
             </div>
-        </form>
+        </div>
+
+        <div id="chat-container">
+            <div id="chat-history">
+                <!-- Messages will appear here -->
+            </div>
+            <div class="input-group">
+                <input type="text" id="user_message" name="user_message" placeholder="Type your message..." autocomplete="off">
+                <button id="btn-send">Send</button>
+            </div>
+        </div>
     </div>
 
     <script>
-        const form = document.getElementById('chat-form');
         const chatHistoryDiv = document.getElementById('chat-history');
-        const sendButton = document.getElementById('send-button');
+        const userMessageInput = document.getElementById('user_message');
+        const sendButton = document.getElementById('btn-send');
+        const processButton = document.getElementById('btn-process');
+        const clearButton = document.getElementById('btn-clear');
+        const expandButton = document.getElementById('btn-expand');
+        const videoUrlInput = document.getElementById('video_url');
 
-        form.addEventListener('submit', function(event) {
-    event.preventDefault(); // Prevent the default form submission
+        // Allow sending with Enter key
+        userMessageInput.addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
 
-    const chatHistory = chatHistoryDiv.innerHTML;
-    document.getElementById('chat-history-input').value = chatHistory;
+        sendButton.addEventListener('click', sendMessage);
+        processButton.addEventListener('click', processVideo);
+        clearButton.addEventListener('click', clearChat);
+        expandButton.addEventListener('click', () => {
+            userMessageInput.value = 'Expand on: ';
+            userMessageInput.focus();
+        });
 
-    // Show the loader
-    sendButton.classList.add('loading');
+        function appendMessage(role, text) {
+            const div = document.createElement('div');
+            div.className = `message ${role}-message`;
+            
+            const roleSpan = document.createElement('span');
+            roleSpan.className = 'role';
+            roleSpan.innerText = role === 'user' ? 'You:' : (role === 'system' ? 'System:' : 'LLM:');
+            
+            const textDiv = document.createElement('div');
+            if (role === 'llm' || role === 'system') {
+                textDiv.innerHTML = marked.parse(text);
+                // Simple workaround for marked putting paragraphs
+                textDiv.style.display = "inline-block"; 
+            } else {
+                textDiv.innerText = text;
+            }
 
-    // Delay disabling the button to allow the loader to show
-    setTimeout(function() {
-        sendButton.disabled = true; // Disable the button after a short delay
-    }, 100); // Adjust the delay as needed
-
-    // Submit the form after a short delay to show the loader
-    setTimeout(function() {
-        form.submit(); // Submit the form programmatically
-    }, 500); // Adjust the delay as needed
-});
-        // Initial scroll to bottom
-        window.onload = function() {
+            div.appendChild(roleSpan);
+            div.appendChild(textDiv);
+            chatHistoryDiv.appendChild(div);
+            
+            // Scroll to bottom
             chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
+        }
+
+        async function processVideo() {
+            const url = videoUrlInput.value.trim();
+            if (!url) return alert('Please enter a YouTube URL');
+
+            processButton.disabled = true;
+            processButton.innerText = 'Processing...';
+
+            appendMessage('system', '_Processing video transcript and generating summary..._');
+
+            try {
+                const response = await fetch('/api/process_video', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ video_url: url })
+                });
+
+                const data = await response.json();
+
+                // Remove the processing message
+                chatHistoryDiv.lastChild.remove();
+
+                if (response.ok) {
+                    appendMessage('llm', data.summary);
+                    userMessageInput.focus();
+                } else {
+                    appendMessage('system', `**Error:** ${data.error}`);
+                }
+            } catch (err) {
+                chatHistoryDiv.lastChild.remove();
+                appendMessage('system', `**Network Error:** ${err.message}`);
+            }
+
+            processButton.disabled = false;
+            processButton.innerText = 'Summarize Video';
+        }
+
+        async function sendMessage() {
+            const message = userMessageInput.value.trim();
+            if (!message) return;
+
+            userMessageInput.value = '';
+            sendButton.disabled = true;
+
+            appendMessage('user', message);
+            
+            // Add loading indicator
+            const loadingDiv = document.createElement('div');
+            loadingDiv.className = 'message llm-message';
+            loadingDiv.id = 'loading-indicator';
+            loadingDiv.innerText = 'LLM is thinking...';
+            chatHistoryDiv.appendChild(loadingDiv);
+            chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: message })
+                });
+
+                const data = await response.json();
+                
+                // Remove loading indicator
+                document.getElementById('loading-indicator').remove();
+
+                if (response.ok) {
+                    appendMessage('llm', data.response);
+                } else {
+                    appendMessage('system', `**Error:** ${data.error}`);
+                }
+            } catch (err) {
+                document.getElementById('loading-indicator').remove();
+                appendMessage('system', `**Network Error:** ${err.message}`);
+            }
+
+            sendButton.disabled = false;
+            userMessageInput.focus();
+        }
+
+        async function clearChat() {
+            chatHistoryDiv.innerHTML = '';
+            videoUrlInput.value = '';
+            
+            try {
+                await fetch('/api/clear', { method: 'POST' });
+            } catch (e) {
+                console.error('Failed to clear session on backend', e);
+            }
         }
     </script>
 </body>
