@@ -11,7 +11,31 @@ from flask_cors import CORS
 import re
 import time
 
+import subprocess
+import sys
+
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
+
+def update_yt_dlp():
+    """Ensure yt-dlp is the latest version."""
+    try:
+        subprocess.run([sys.executable, '-m', 'pip', 'install', '-U', 'yt-dlp'], check=True, capture_output=True)
+        print("yt-dlp updated to the latest version.")
+    except Exception as e:
+        print(f"Failed to update yt-dlp: {e}")
+
+def clear_yt_dlp_cache():
+    """Clear yt-dlp cache to avoid potential bot detection issues."""
+    try:
+        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+            ydl.cache.remove()
+        print("yt-dlp cache cleared.")
+    except Exception as e:
+        print(f"Failed to clear yt-dlp cache: {e}")
+
+# Call maintenance tasks on startup
+update_yt_dlp()
+clear_yt_dlp_cache()
 
 app = Flask(__name__)
 # Secure random key for session cookie signing
@@ -65,6 +89,13 @@ def yt_dlp_fallback(youtube_url, target_langs):
     ydl_opts = {
         'quiet': True,
         'skip_download': True,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'source_address': '0.0.0.0', # This forces IPv4
+        'nocheckcertificate': True,
+        'ignoreerrors': True,
+        'no_warnings': True,
+        'extract_flat': 'in_playlist',
+        'geo_bypass': True,
     }
     if os.path.exists(cookie_path):
         ydl_opts['cookiefile'] = cookie_path
