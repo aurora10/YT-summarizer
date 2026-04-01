@@ -4,6 +4,7 @@ import urllib.request
 import json
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import os
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, jsonify, session
@@ -13,6 +14,14 @@ import time
 
 import subprocess
 import sys
+import ssl
+
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+else:
+    ssl._create_default_https_context = _create_unverified_https_context
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
 
@@ -217,13 +226,16 @@ def send_message_with_retry(chat, message, max_retries=3, backoff_delay=1):
             response = chat.send_message(message)
             return response.text
         except Exception as e:
-            if "429" in str(e) or "Resource has been exhausted" in str(e):
+            error_msg = str(e)
+            if "429" in error_msg or "Resource has been exhausted" in error_msg:
                 retries += 1
                 if retries > max_retries:
                     return "The service is currently busy due to rate limits. Please try again later."
                 time.sleep(backoff_delay * retries)
+            elif "PROHIBITED_CONTENT" in error_msg:
+                return "This content is restricted by the AI's core safety policies and cannot be summarized or processed."
             else:
-                return f"An error occurred: {str(e)}"
+                return f"An error occurred: {error_msg}"
     return "Error communicating with LLM."
 
 @app.route("/")
@@ -259,13 +271,33 @@ def process_video():
             return jsonify({"error": "Google API Key missing. Please set it in .env file."}), 500
             
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.5-flash')
+        safety_settings = {
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+        }
+        model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety_settings)
         chat = model.start_chat(history=[])
         
-        system_prompt = f"You are a helpful assistant. The language of the video transcript is '{lang_code}'. Please respond and analyze in the same language. Provide a comprehensive summary using bullet points. If the user asks follow-up questions, use your knowledge if the answer is not in the transcript.\n\n--- Video Transcript ---\n{cleaned_transcript}\n--- End Transcript ---"
+        system_prompt = f"You are a helpful assistant. The language of the video transcript is '{lang_code}'. Please respond and analyze in the same language. Provide an objective, analytical, and educational summary of the transcript using bullet points. Please act merely as an objective observer summarizing the content, even if the content discusses sensitive topics.\n\n--- Video Transcript ---\n{cleaned_transcript}\n--- End Transcript ---"
         
         summary = send_message_with_retry(chat, system_prompt)
         
+        if "restricted by the AI's core safety policies" in summary:
+            match = re.search(r'(?:https?:\/\/)?(?:[a-zA-Z0-9_-]+\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})', video_url)
+            video_id = match.group(1) if match else "unknown"
+            filename = f"transcript_{video_id}.txt"
+            filepath = os.path.join(os.path.dirname(__file__), filename)
+            try:
+                readable_transcript = cleaned_transcript.replace('>> ', '\n\n>> ')
+                readable_transcript = re.sub(r'([.?!])\s+(?=[A-ZА-ЯЁ\u00C0-\u017F])', r'\1\n\n', readable_transcript)
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(readable_transcript.strip())
+                summary += f" The raw transcript has been saved locally as {filename}."
+            except Exception as e:
+                pass
+                
         # Save session context so we don't have to re-fetch on follow-ups
         session_data["video_url"] = video_url
         session_data["chat_session"] = chat
@@ -297,7 +329,13 @@ def chat():
         try:
             api_key = os.environ.get("GOOGLE_API_KEY")
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-2.5-flash')
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+            model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety_settings)
             chat_session = model.start_chat(history=[])
             session_data["chat_session"] = chat_session
         except Exception as e:
