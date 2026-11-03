@@ -9,7 +9,7 @@
 # scaling to multiple workers.
 #
 # Mount a volume for the cache, or every redeploy starts cold:
-#   -v yt-cache:/app/data -e CACHE_DB=/app/data/cache.sqlite3
+#   -v yt-cache:/app/data
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -23,10 +23,18 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
-# Run as a non-root user.
-RUN useradd --create-home --uid 10001 appuser
+# Run as a non-root user. The data directory must exist *and* be owned by that
+# user before any volume is mounted: Docker copies a fresh named volume's
+# ownership from the image path, so creating it later (or as root) makes the
+# mounted cache volume unwritable and the cache silently disabled.
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /app/data \
+    && chown -R appuser:appuser /app/data
 
 COPY --chown=appuser:appuser . .
+
+# Point the cache at the directory meant to be mounted as a volume.
+ENV CACHE_DB=/app/data/cache.sqlite3
 
 USER appuser
 

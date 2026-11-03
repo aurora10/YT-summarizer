@@ -3,41 +3,225 @@
 Paste a YouTube URL, get a bullet-point summary of the transcript, then ask
 follow-up questions about the video in a chat.
 
-The LLM backend is **provider-agnostic**: one env var picks the provider, one
-env var holds the key.
+The LLM backend is **provider-agnostic**: one env var picks the provider, one env
+var holds the key. DeepSeek is the default.
+
+**Contents:** [Requirements](#requirements) ·
+[Run locally](#run-locally) · [Run with Docker](#run-with-docker) ·
+[Verify the install](#verify-the-install) ·
+[Switching LLM providers](#switching-llm-providers) ·
+[Configuration](#configuration) · [Tests](#tests) · [Long videos](#long-videos) ·
+[Caching](#caching) · [Architecture](#architecture) ·
+[Troubleshooting](#troubleshooting)
 
 ---
 
-## Quick start
+## Requirements
+
+| | Needed for | Notes |
+|---|---|---|
+| **Python 3.9+** | running locally | 3.12 recommended — that is what the Docker image uses. Check with `python3 --version`. |
+| **An API key** | summarization | DeepSeek by default: create one at [platform.deepseek.com](https://platform.deepseek.com) → *API keys*. Any supported provider works; see below. |
+| **Docker** *(optional)* | the container build | Only if you want to run it in a container instead of a venv. |
+
+Nothing else is required: no database server, no Redis, no Node. The cache is a
+local SQLite file that the app creates on first run.
+
+There is no build step in the "compile the source" sense — Python is interpreted
+and the browser assets are vendored. "Build" here means *create a virtualenv and
+install dependencies*, or *build the Docker image*.
+
+---
+
+## Run locally
+
+### 1. Get the code
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-cp .env.example .env
-# put your key in .env
-
-python app.py            # http://127.0.0.1:5001
+cd ~/Desktop/CodeWork/YT-summarizer
 ```
 
-Open the page, paste a URL, press **Summarize Video**.
+### 2. Create a virtual environment
 
-Requires Python 3.9+ (the Docker image uses 3.12). `requirements.txt` is complete
-and installs cleanly into an empty virtualenv — that is verified by the test
-suite, which also runs against a clean install.
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
 
-> **Note on `yt-dlp`.** It is only the *fallback* transcript path, but it goes
-> stale quickly because YouTube changes constantly. If summaries start failing
-> with "The page needs to be reloaded" or "Failed to extract any player
-> response", run `pip install -U yt-dlp`. The app reports the version it used and
-> tells you when upgrading is the likely fix.
+Two things that trip people up:
 
-> **Upgrading from the previous version?** The app no longer reads
-> `GOOGLE_API_KEY` implicitly. Either add `DEEPSEEK_API_KEY=...` (the new default
-> provider), or keep using your existing Gemini key by setting
-> `LLM_PROVIDER=gemini`. If the key is missing, startup fails with a message
-> naming the variable to set.
+- Use **`python3`**, not `python`. On macOS only `python3` is on `PATH` by
+  default. Once the venv is active, `python` points at the venv's interpreter.
+- If this directory already has an `.venv` that came from somewhere else, delete
+  it first (`rm -rf .venv`). A virtualenv hardcodes absolute paths, so one moved
+  or copied from another directory has broken launchers — you get
+  `cannot execute: required file not found` from `pip`.
+
+Confirm you are in the venv — the prompt is prefixed with `(.venv)` and:
+
+```bash
+python -c "import sys; print(sys.prefix)"
+```
+
+### 3. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Configure
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and set your key. The minimum for the default provider:
+
+```dotenv
+LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=sk-...
+```
+
+`.env` must sit in the same folder as `app.py`; it is read at startup and is
+already gitignored. To use a different provider, change `LLM_PROVIDER` — see
+[Switching LLM providers](#switching-llm-providers).
+
+Also worth setting now (optional locally, required in production):
+
+```dotenv
+SECRET_KEY=<generate one: python -c "import secrets; print(secrets.token_hex(32))">
+```
+
+### 5. Start the server
+
+```bash
+python app.py
+```
+
+You should see:
+
+```
+INFO  llm: LLM backend ready: DeepSeek (deepseek) model='deepseek-chat' key=set
+INFO  __main__: Cache enabled at /.../cache.sqlite3
+INFO  __main__: Listening on http://127.0.0.1:5001 (debug=False)
+```
+
+### 6. Use it
+
+Open **http://127.0.0.1:5001**, paste a YouTube URL, press **Summarize Video**.
+
+Start with a short video to confirm everything works, e.g.
+`https://www.youtube.com/watch?v=jNQXAC9IVRw` (about 20 seconds). Then try a
+long one.
+
+You may also see a `NotOpenSSLWarning` from `urllib3` on Python 3.9 (macOS ships
+LibreSSL). It is harmless; Python 3.11+ does not print it.
+
+Press `Ctrl+C` to stop.
+
+### Running it again later
+
+```bash
+cd ~/Desktop/CodeWork/YT-summarizer
+source .venv/bin/activate
+python app.py
+```
+
+### If macOS blocks outbound requests
+
+If your machine routes traffic through a system HTTP proxy that cannot reach
+YouTube, `yt-dlp` fails with `Unable to connect to proxy`. Bypass it for this app:
+
+```bash
+no_proxy='*' python app.py
+```
+
+Check what the system reports:
+
+```bash
+python -c "import urllib.request; print(urllib.request.getproxies())"
+```
+
+---
+
+## Run with Docker
+
+Build the image:
+
+```bash
+docker build -t yt-summarizer .
+```
+
+Run it — note the container listens on **8000**, not 5001:
+
+```bash
+docker run -d --name yt-summarizer \
+  -p 8000:8000 \
+  --env-file .env \
+  -e SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))") \
+  -v yt-cache:/app/data \
+  yt-summarizer
+```
+
+Open **http://127.0.0.1:8000**.
+
+```bash
+docker logs -f yt-summarizer    # follow logs: provider, cache state, timings
+docker stop yt-summarizer       # stop
+docker rm -f yt-summarizer      # remove
+```
+
+Each summarize logs a line such as
+`Summarized dQw4w9WgXcQ in 3.2s (lang=en, 217 chars, cache=miss/miss)`, so you
+can see hits, misses and timings without attaching a debugger.
+
+The image runs gunicorn (not the Flask dev server) as a non-root user, and
+reports health via `HEALTHCHECK` — `docker ps` shows `(healthy)` once it is up.
+
+Two things that matter:
+
+- **Mount the cache on a volume.** Without `-v`, `cache.sqlite3` lives inside the
+  container filesystem and every redeploy starts cold — which also throws away
+  the one thing that protects you from a YouTube block. The image already points
+  `CACHE_DB` at `/app/data/cache.sqlite3` and creates that directory owned by the
+  runtime user, so a named volume mounted there is writable out of the box.
+- **One worker by design.** Conversations live in an in-process store, so
+  multiple gunicorn *worker processes* would each see a different set of sessions.
+  Concurrency comes from threads. Swap `sessions.SessionStore` for a Redis-backed
+  implementation before raising `--workers`.
+
+Port summary: **local `python app.py` → 5001**, **Docker → 8000**. Override the
+local port with `PORT=8080 python app.py`.
+
+---
+
+## Verify the install
+
+Any of these confirms the server is configured correctly. `curl` alone is enough
+— you do not need to open a browser.
+
+```bash
+# 1. Is it up, and which backend did it pick?
+curl -s localhost:5001/healthz | python -m json.tool
+```
+
+Expect `"status": "ok"`, your provider and model, `"key_configured": true`, and
+cache counters. If the key is missing the app refuses to start and names the
+variable to set.
+
+```bash
+# 2. Can it actually summarize? (fresh session cookie required)
+curl -s -c /tmp/c.txt -o /dev/null localhost:5001/
+curl -s -b /tmp/c.txt -H 'Content-Type: application/json' \
+  -d '{"video_url":"https://www.youtube.com/watch?v=jNQXAC9IVRw"}' \
+  localhost:5001/api/process_video | python -m json.tool
+```
+
+The answer includes `"cache": {"transcript": "miss", "summary": "miss"}`. Run the
+same command again and both flip to `"hit"`, returning in milliseconds — that is
+the cache working.
+
+---
 
 ## Switching LLM providers
 
@@ -77,11 +261,7 @@ keys in `.env` and switch by editing `LLM_PROVIDER` alone.
 | `ollama` | OpenAI-compatible | `llama3.2` |
 | `custom` | OpenAI-compatible | *(set `LLM_MODEL` + `LLM_BASE_URL`)* |
 
-Verify what the server actually picked up:
-
-```bash
-curl -s localhost:5001/healthz | python -m json.tool
-```
+`GET /healthz` shows which provider and model are active.
 
 ### Adding another provider
 
@@ -112,44 +292,22 @@ annotated list. The ones that matter most:
 | `CACHE_DB` | `cache.sqlite3` | SQLite file for the cache |
 | `TRANSCRIPT_CACHE_TTL` | `90 days` | Transcript reuse window |
 | `FAILURE_CACHE_TTL` | `600` | How long a fetch failure is remembered |
+| `PORT` | `5001` | Local listen port (`app.py` only) |
 | `DEBUG` | `false` | Never enable on a reachable address |
-
-## Running in production
-
-```bash
-docker build -t yt-summarizer .
-docker run -p 8000:8000 \
-  --env-file .env \
-  -e SECRET_KEY=... \
-  -v yt-cache:/app/data \
-  -e CACHE_DB=/app/data/cache.sqlite3 \
-  yt-summarizer
-```
-
-The image runs gunicorn as a non-root user with a healthcheck.
-
-> **Mount the cache on a volume.** Without `-v`, `cache.sqlite3` lives inside the
-> container filesystem and every redeploy starts cold — which also throws away the
-> one thing that protects you from a YouTube block. Point `CACHE_DB` at a mounted
-> path.
-
-> **One worker by design.** Conversations live in an in-process store, so multiple
-> gunicorn *worker processes* would each see different sessions. Concurrency comes
-> from threads. Swap `sessions.SessionStore` for a Redis-backed implementation
-> before raising `--workers`.
 
 ## Tests
 
 ```bash
-pip install pytest ruff
+pip install pytest ruff     # dev tools, not runtime dependencies
 python -m pytest
 python -m ruff check .
 ```
 
 The suite covers the pure pieces — URL parsing, subtitle parsers, transcript
-truncation, the session store, the rate limiter, and the LLM adapters against
-mocked HTTP responses — plus route-level tests with the transcript fetcher and
-provider stubbed out.
+truncation and token budgeting, the cache, the session store, the rate limiter,
+and the LLM adapters against mocked HTTP responses — plus route-level tests with
+the transcript fetcher and provider stubbed out. No network access or API key is
+needed to run it.
 
 ## Long videos
 
@@ -205,6 +363,8 @@ in `app.py` and old summaries stop matching. Add `"force_refresh": true` to the
 The cache is best-effort: if the database cannot be opened, the app logs it and
 runs uncached rather than failing.
 
+Delete `cache.sqlite3` at any time to start over; it is rebuilt automatically.
+
 ## Architecture
 
 ```
@@ -215,6 +375,9 @@ cache.py        SQLite caches for transcripts, summaries and recent failures
 transcripts.py  Video id extraction, caption fetching, pure subtitle parsers
 sessions.py     Bounded TTL session store + rate limiter
 static/         app.js, style.css, vendor/ (pinned marked + DOMPurify)
+templates/      index.html
+tests/          pytest suite
+Dockerfile      gunicorn image, non-root user, healthcheck
 ```
 
 Design notes worth knowing:
@@ -234,13 +397,19 @@ Design notes worth knowing:
 
 | Symptom | Cause and fix |
 |---|---|
-| `Configuration error: No API key found for provider 'deepseek'` | Set `DEEPSEEK_API_KEY` (or `LLM_API_KEY`), or set `LLM_PROVIDER=gemini` to use an existing `GOOGLE_API_KEY`. |
-| `LLM_PROVIDER rejected the request's credentials (401/400)` | The key does not match the selected provider. `GET /healthz` shows which provider and model are active. |
-| `Could not fetch the transcript: ... Unable to connect to proxy` | `yt-dlp` honours the system HTTP proxy. If the proxy cannot reach YouTube, bypass it with `no_proxy='*'` or configure the proxy properly. |
-| `yt-dlp could not read this video` / `Failed to extract any player response` | The `yt-dlp` release is too old to parse current YouTube. Bump it (`pip install -U yt-dlp`) and re-run the tests. |
+| `python: command not found` | macOS ships `python3` only. Use `python3 -m venv .venv`, then activate. |
+| `pip: cannot execute: required file not found` | The `.venv` was created in a different directory (virtualenvs hardcode absolute paths). `rm -rf .venv` and recreate it. |
+| `ModuleNotFoundError: No module named 'flask'` | The venv is not active, or you installed into a different interpreter. `source .venv/bin/activate`, then `pip install -r requirements.txt`. |
+| `Configuration error: No API key found for provider 'deepseek'` | Set `DEEPSEEK_API_KEY` (or `LLM_API_KEY`) in `.env`, or set `LLM_PROVIDER=gemini` to use an existing `GOOGLE_API_KEY`. |
+| `... rejected the request's credentials (401/400)` | The key does not match the selected provider. `GET /healthz` shows which provider and model are active. |
+| `Could not reach YouTube from this server` | Network or proxy problem — not a bug in the app. See [If macOS blocks outbound requests](#if-macos-blocks-outbound-requests). |
+| `yt-dlp could not read this video` / `Failed to extract any player response` | The `yt-dlp` release is too old for current YouTube: `pip install -U yt-dlp`. |
 | Every video returns `no_transcript` | The video has no captions, or YouTube is blocking this IP. A `cookies.txt` (see `COOKIES_FILE`) helps with age/region-restricted videos. |
 | Chat says "Started a new conversation" | The session expired (`SESSION_TTL_SECONDS`) or the server restarted. Re-run **Summarize Video**. |
-| Summaries stop after the first N characters | `MAX_TRANSCRIPT_CHARS` truncated a long transcript; the summary tells you when that happened. |
+| Summaries stop after the first N characters | The transcript was clamped to fit `MAX_TRANSCRIPT_CHARS` / `LLM_CONTEXT_TOKENS`; the summary says so. |
+| `docker build` fails writing to `~/.docker` | Docker's buildx cache is not writable. Retry with the legacy builder: `DOCKER_BUILDKIT=0 docker build -t yt-summarizer .` |
+| Container starts then restarts | Read `docker logs yt-summarizer` — usually a missing or wrong key, which fails startup on purpose. |
+| Cache never fills up in Docker (`/app/data` stays empty) | The cache runs uncached rather than crashing, so this is silent. Check `docker exec yt-summarizer ls -l /app/data` — it must be owned by `appuser`. The image creates it correctly; a bind mount (`-v /host/path:/app/data`) can override that with the host's ownership. |
 
 ## Security notes
 

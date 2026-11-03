@@ -86,6 +86,13 @@ def create_app(settings: Settings | None = None) -> Flask:
         JSON_SORT_KEYS=False,
     )
 
+    # Configure logging here rather than in main(): under gunicorn (and any
+    # other WSGI server) main() never runs, so without this the app's own INFO
+    # logs — provider, cache, per-request timings — are silently dropped.
+    # Respect an existing configuration instead of clobbering it.
+    if not logging.getLogger().handlers:
+        app_config.configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
+
     provider = build_provider(settings.llm)
     store = SessionStore(ttl_seconds=settings.session_ttl, max_entries=settings.session_max)
     limiter = RateLimiter(max_per_minute=settings.rate_limit_per_minute)

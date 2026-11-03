@@ -676,3 +676,32 @@ def test_large_context_model_takes_the_whole_transcript(provider, monkeypatch) -
 
 def test_healthz_reports_the_context_budget(client) -> None:
     assert client.get("/healthz").get_json()["llm"]["context_tokens"] == 1_048_576
+
+
+def test_create_app_configures_logging_for_wsgi_servers(monkeypatch) -> None:
+    """gunicorn never calls main(), so create_app must set up logging itself."""
+    import logging
+
+    root = logging.getLogger()
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+
+    app_module.create_app(make_settings())
+
+    assert root.handlers, "create_app should configure a root handler"
+
+
+def test_create_app_respects_existing_logging(monkeypatch) -> None:
+    """If the host already configured logging, leave it alone."""
+    import logging
+
+    root = logging.getLogger()
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+    sentinel = logging.NullHandler()
+    root.addHandler(sentinel)
+    try:
+        app_module.create_app(make_settings())
+        assert root.handlers == [sentinel]
+    finally:
+        root.removeHandler(sentinel)
