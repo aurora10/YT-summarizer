@@ -1,7 +1,27 @@
-yt-dlp
-youtube-transcript-api
-flask
-Flask-Cors
-python-dotenv
-markdown
-langdetect
+# Runtime dependencies.
+#
+# Version policy:
+#   * Each entry has a floor and a ceiling so a rebuild is reproducible.
+#   * yt-dlp is the exception: YouTube breaks its extractors regularly, so it
+#     needs to stay fresh. Update it deliberately, then re-run the tests.
+#
+# Not listed, deliberately:
+#   * google-generativeai — replaced by a direct REST call in llm.py (the SDK is
+#     deprecated and pulls in ~50 MB of protobuf/grpc for one endpoint).
+#   * Flask-Cors   — the API is same-origin only.
+#   * Markdown     — rendering happens client-side (static/vendor/marked.umd.js).
+#   * langdetect   — was listed but never imported.
+
+Flask==3.1.0
+python-dotenv==1.0.1
+requests==2.32.3
+# 1.x is the working major: the 0.x fast path failed against current YouTube in
+# testing. The code still tolerates both, so an older pinned env keeps working.
+youtube-transcript-api>=1.2.4,<2
+# Floors are recent on purpose — old yt-dlp releases cannot read YouTube at all
+# (2024.12.23 failed every request during testing). The floor is the newest
+# release the package index reliably resolves; keep it updated, because YouTube
+# breaks extractors regularly:
+#     pip install -U yt-dlp && python -m pytest
+yt-dlp>=2025.10.14,<2027
+gunicorn>=23.0.0,<24

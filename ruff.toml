@@ -1,0 +1,38 @@
+# Ruff configuration — lint only; formatting is left to the author.
+#
+#   python -m ruff check .
+#   python -m ruff check --fix .
+
+target-version = "py312"
+line-length = 100
+
+[lint]
+select = [
+    "F",    # pyflakes: undefined names, unused imports
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "I",    # import sorting
+    "B",    # bugbear: likely bugs
+    "UP",   # pyupgrade: modern syntax
+    "C4",   # comprehensions
+    "SIM",  # simplifications
+    "PIE",  # misc lints
+    "RET",  # return-style consistency
+    "ARG",  # unused arguments
+    "S",    # bandit: security
+]
+
+ignore = [
+    "E501",    # line length (handled by the editor)
+    "S101",    # assert: used freely in tests
+    "S311",    # random: jitter only, not cryptography
+    "S310",    # urlopen on a URL that came from the provider's own API
+    "B008",    # ...
+]
+
+[lint.per-file-ignores]
+# Pytest fixtures exist for their side effects, and the stub callables must match
+# the signatures of the real functions they replace. The hardcoded "passwords"
+# are obviously fake test constants.
+"tests/*" = ["ARG001", "ARG002", "ARG005", "C408", "S105", "S106"]
+"conftest.py" = ["ARG001"]
