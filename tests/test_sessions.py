@@ -28,17 +28,17 @@ def test_get_creates_empty_session() -> None:
     data = store.get("user-1")
 
     assert data.chat is None
-    assert data.transcript is None
+    assert data.video_id is None
     assert len(store) == 1
 
 
 def test_get_returns_same_object_for_active_session() -> None:
     store = SessionStore(ttl_seconds=60, max_entries=10)
     first = store.get("user-1")
-    first.transcript = "hello"
+    first.video_id = "dQw4w9WgXcQ"
 
     assert store.get("user-1") is first
-    assert store.get("user-1").transcript == "hello"
+    assert store.get("user-1").video_id == "dQw4w9WgXcQ"
 
 
 def test_expired_session_is_recreated_empty() -> None:
@@ -46,13 +46,13 @@ def test_expired_session_is_recreated_empty() -> None:
     store = SessionStore(ttl_seconds=60, max_entries=10, clock=clock)
 
     data = store.get("user-1")
-    data.transcript = "hello"
+    data.video_id = "dQw4w9WgXcQ"
 
     clock.advance(61)
     fresh = store.get("user-1")
 
     assert fresh is not data
-    assert fresh.transcript is None
+    assert fresh.video_id is None
 
 
 def test_activity_refreshes_ttl() -> None:
@@ -60,14 +60,14 @@ def test_activity_refreshes_ttl() -> None:
     store = SessionStore(ttl_seconds=60, max_entries=10, clock=clock)
 
     data = store.get("user-1")
-    data.transcript = "keep me"
+    data.video_id = "keepMe00000"
 
     # Touch it every 30s for 3 minutes: it should never expire.
     for _ in range(6):
         clock.advance(30)
         assert store.get("user-1") is data
 
-    assert store.get("user-1").transcript == "keep me"
+    assert store.get("user-1").video_id == "keepMe00000"
 
 
 def test_capacity_is_enforced_by_evicting_oldest() -> None:
@@ -109,14 +109,14 @@ def test_reset_clears_conversation_but_keeps_slot() -> None:
     store = SessionStore(ttl_seconds=60, max_entries=10)
 
     data = store.get("user-1")
-    data.transcript = "hello"
+    data.video_id = "dQw4w9WgXcQ"
     data.video_id = "dQw4w9WgXcQ"
 
     store.reset("user-1")
     again = store.get("user-1")
 
     assert again is data
-    assert again.transcript is None
+    assert again.video_id is None
     assert again.video_id is None
 
 

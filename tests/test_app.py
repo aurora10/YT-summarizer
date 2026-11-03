@@ -30,6 +30,7 @@ def make_settings(**overrides) -> Settings:
         timeout=5.0,
         max_retries=0,
         max_tokens=256,
+        context_tokens=1_048_576,
         extra_headers={},
     )
     base = dict(
@@ -41,6 +42,11 @@ def make_settings(**overrides) -> Settings:
         transcript_languages=("en",),
         http_timeout=1.0,
         rate_limit_per_minute=100,
+        cache_enabled=True,
+        cache_db=Path(":memory:"),
+        transcript_cache_ttl=90 * 24 * 3600,
+        summary_cache_ttl=90 * 24 * 3600,
+        failure_cache_ttl=600,
         host="127.0.0.1",
         port=5001,
         debug=False,
@@ -53,13 +59,25 @@ def make_settings(**overrides) -> Settings:
 
 
 class FakeChat:
-    def __init__(self, reply: str = "a summary", system_instruction: str = "") -> None:
+    def __init__(
+        self,
+        reply: str = "a summary",
+        system_instruction: str = "",
+        history: list | None = None,
+    ) -> None:
         self.reply = reply
         self.system_instruction = system_instruction
+        # Seeded turns may be Turn objects or (role, content) tuples.
+        self.history: list = [
+            (item.role, item.content) if hasattr(item, "role") else tuple(item)
+            for item in (history or [])
+        ]
         self.sent: list[str] = []
 
     def send(self, message: str) -> str:
         self.sent.append(message)
+        self.history.append(("user", message))
+        self.history.append(("assistant", self.reply))
         return self.reply
 
 
@@ -69,8 +87,8 @@ class FakeProvider:
         self.error = error
         self.chats: list[FakeChat] = []
 
-    def start_chat(self, system_instruction: str = "") -> FakeChat:
-        chat = FakeChat(self.reply, system_instruction)
+    def start_chat(self, system_instruction: str = "", history: list | None = None) -> FakeChat:
+        chat = FakeChat(self.reply, system_instruction, history)
         if self.error is not None:
             def boom(message: str) -> str:
                 chat.sent.append(message)
@@ -79,6 +97,15 @@ class FakeProvider:
             chat.send = boom  # type: ignore[method-assign]
         self.chats.append(chat)
         return chat
+
+
+def with_context(settings, context_tokens: int):
+    """Same settings, different model context window."""
+    import dataclasses
+
+    return dataclasses.replace(
+        settings, llm=dataclasses.replace(settings.llm, context_tokens=context_tokens)
+    )
 
 
 @pytest.fixture
@@ -421,3 +448,231 @@ def test_unknown_api_route_returns_json(client) -> None:
 
     assert response.status_code == 404
     assert response.is_json
+
+
+# --------------------------------------------------------------------------- #
+# Caching
+# --------------------------------------------------------------------------- #
+
+
+def _counting_fetch(monkeypatch, text: str = "hello world", lang: str = "en"):
+    """Patch the fetcher and count how often it is actually called."""
+    calls: list[str] = []
+
+    def fake_fetch(url, **kwargs):
+        calls.append(url)
+        return Transcript(text=text, lang_code=lang, source="test")
+
+    monkeypatch.setattr(app_module, "fetch_transcript", fake_fetch)
+    return calls
+
+
+def _model_calls(provider: FakeProvider) -> int:
+    """How many times the LLM was actually invoked (not merely chatted with)."""
+    return sum(len(chat.sent) for chat in provider.chats)
+
+
+def test_second_summarize_is_served_entirely_from_cache(
+    session_client, provider, monkeypatch
+) -> None:
+    calls = _counting_fetch(monkeypatch)
+
+    first = session_client.post("/api/process_video", json={"video_url": VIDEO_URL}).get_json()
+    second = session_client.post("/api/process_video", json={"video_url": VIDEO_URL}).get_json()
+
+    assert first["cache"] == {"transcript": "miss", "summary": "miss"}
+    assert second["cache"] == {"transcript": "hit", "summary": "hit"}
+    assert second["summary"] == first["summary"]
+    # The whole point: one fetch, one model call, for two requests.
+    assert len(calls) == 1
+    assert _model_calls(provider) == 1
+
+
+def test_cached_transcript_still_costs_one_model_call(
+    session_client, provider, monkeypatch
+) -> None:
+    """Transcript hit but summary miss must still skip the fragile fetch."""
+    calls = _counting_fetch(monkeypatch)
+    ext = session_client.application.extensions["yt_summarizer"]
+    ext["cache"].put_transcript(
+        "dQw4w9WgXcQ", text="hello world", lang_code="en", source="cached"
+    )
+
+    payload = session_client.post(
+        "/api/process_video", json={"video_url": VIDEO_URL}
+    ).get_json()
+
+    assert payload["cache"] == {"transcript": "hit", "summary": "miss"}
+    assert payload["source"] == "cached"
+    assert calls == []  # never hit the network
+    assert _model_calls(provider) == 1
+
+
+def test_cache_hit_restores_follow_up_context(session_client, provider, monkeypatch) -> None:
+    """Serving from cache must not lose the video context for follow-ups."""
+    _counting_fetch(monkeypatch)
+    session_client.post("/api/process_video", json={"video_url": VIDEO_URL})
+    cached = session_client.post("/api/process_video", json={"video_url": VIDEO_URL}).get_json()
+
+    response = session_client.post("/api/chat", json={"message": "expand on point two"})
+
+    assert response.get_json()["new_conversation"] is False
+
+    # The chat used for the cached request was seeded with the original exchange,
+    # so the model sees the transcript and the summary it would have produced.
+    seeded = provider.chats[-1]
+    assert [role for role, _ in seeded.history[:2]] == ["user", "assistant"]
+    assert "<transcript>" in seeded.history[0][1]
+    assert seeded.history[1][1] == cached["summary"]
+
+
+def test_force_refresh_bypasses_both_caches(session_client, provider, monkeypatch) -> None:
+    calls = _counting_fetch(monkeypatch)
+    session_client.post("/api/process_video", json={"video_url": VIDEO_URL})
+    session_client.post("/api/process_video", json={"video_url": VIDEO_URL})
+
+    forced = session_client.post(
+        "/api/process_video", json={"video_url": VIDEO_URL, "force_refresh": True}
+    ).get_json()
+
+    assert forced["cache"] == {"transcript": "miss", "summary": "miss"}
+    assert len(calls) == 2
+    assert _model_calls(provider) == 2
+
+
+def test_transcript_failure_is_cached_briefly(session_client, monkeypatch) -> None:
+    """Repeated clicks on a blocked video must not hammer the provider."""
+    calls: list[str] = []
+
+    def boom(url, **kwargs):
+        calls.append(url)
+        raise TranscriptFetchError("network down")
+
+    monkeypatch.setattr(app_module, "fetch_transcript", boom)
+
+    first = session_client.post("/api/process_video", json={"video_url": VIDEO_URL})
+    second = session_client.post("/api/process_video", json={"video_url": VIDEO_URL})
+
+    assert first.status_code == 502
+    assert second.status_code == 502
+    assert second.get_json()["code"] == "transcript_fetch_failed"
+    assert len(calls) == 1  # second response came from the failure cache
+
+
+def test_force_refresh_retries_after_a_cached_failure(session_client, monkeypatch) -> None:
+    calls: list[str] = []
+
+    def boom(url, **kwargs):
+        calls.append(url)
+        raise TranscriptFetchError("network down")
+
+    monkeypatch.setattr(app_module, "fetch_transcript", boom)
+    session_client.post("/api/process_video", json={"video_url": VIDEO_URL})
+
+    forced = session_client.post(
+        "/api/process_video", json={"video_url": VIDEO_URL, "force_refresh": True}
+    )
+
+    assert forced.status_code == 502
+    assert len(calls) == 2  # the retry actually happened
+
+
+def test_success_clears_a_stale_failure(session_client, provider, monkeypatch) -> None:
+    """After a failure expires, a success must overwrite it."""
+    def boom(url, **kwargs):
+        raise TranscriptFetchError("network down")
+
+    monkeypatch.setattr(app_module, "fetch_transcript", boom)
+    session_client.post("/api/process_video", json={"video_url": VIDEO_URL})
+
+    _counting_fetch(monkeypatch)
+    ok = session_client.post(
+        "/api/process_video", json={"video_url": VIDEO_URL, "force_refresh": True}
+    )
+
+    assert ok.status_code == 200
+    ext = session_client.application.extensions["yt_summarizer"]
+    assert ext["cache"].get_failure("dQw4w9WgXcQ") is None
+
+
+def test_cache_stores_full_text_while_the_response_is_truncated(
+    provider, monkeypatch
+) -> None:
+    """Truncation is a per-request decision; the cache keeps everything."""
+    app = app_module.create_app(make_settings(max_transcript_chars=1_000))
+    app.config.update(TESTING=True)
+    client = app.test_client()
+    client.get("/")
+
+    long_text = "This is a sentence. " * 500  # 10_000 chars
+    _counting_fetch(monkeypatch, text=long_text)
+
+    payload = client.post("/api/process_video", json={"video_url": VIDEO_URL}).get_json()
+
+    assert payload["truncated"] is True
+    assert payload["transcript_chars"] == len(long_text)
+
+    cached = app.extensions["yt_summarizer"]["cache"].get_transcript("dQw4w9WgXcQ")
+    assert cached is not None
+    assert len(cached.text) == len(long_text)  # full text survived
+
+
+def test_healthz_reports_cache_stats(client) -> None:
+    payload = client.get("/healthz").get_json()
+
+    assert payload["cache"]["enabled"] == 1
+    assert payload["cache"]["transcripts"] == 0
+
+
+def test_cache_can_be_disabled(provider, monkeypatch) -> None:
+    app = app_module.create_app(make_settings(cache_enabled=False))
+    app.config.update(TESTING=True)
+    client = app.test_client()
+    client.get("/")
+
+    calls = _counting_fetch(monkeypatch)
+    client.post("/api/process_video", json={"video_url": VIDEO_URL})
+    second = client.post("/api/process_video", json={"video_url": VIDEO_URL}).get_json()
+
+    assert second["cache"] == {"transcript": "miss", "summary": "miss"}
+    assert len(calls) == 2  # nothing was reused
+
+
+# --------------------------------------------------------------------------- #
+# Context-window safety
+# --------------------------------------------------------------------------- #
+
+
+def test_small_context_model_truncates_a_modest_transcript(provider, monkeypatch) -> None:
+    """An 8k-context local model must not be handed a 60k-character transcript."""
+    app = app_module.create_app(with_context(make_settings(max_transcript_chars=400_000), 8_192))
+    app.config.update(TESTING=True)
+    client = app.test_client()
+    client.get("/")
+
+    _counting_fetch(monkeypatch, text="слово " * 10_000)  # 60k chars, Cyrillic
+
+    payload = client.post("/api/process_video", json={"video_url": VIDEO_URL}).get_json()
+
+    assert payload["truncated"] is True
+    assert payload["context_tokens"] == 8_192
+    assert payload["estimated_tokens"] > 8_192  # the original was over budget
+    assert payload["transcript_chars"] == 60_000
+
+
+def test_large_context_model_takes_the_whole_transcript(provider, monkeypatch) -> None:
+    app = app_module.create_app(make_settings(max_transcript_chars=400_000))
+    app.config.update(TESTING=True)
+    client = app.test_client()
+    client.get("/")
+
+    _counting_fetch(monkeypatch, text="слово " * 10_000)
+
+    payload = client.post("/api/process_video", json={"video_url": VIDEO_URL}).get_json()
+
+    assert payload["truncated"] is False
+    assert payload["context_tokens"] == 1_048_576
+
+
+def test_healthz_reports_the_context_budget(client) -> None:
+    assert client.get("/healthz").get_json()["llm"]["context_tokens"] == 1_048_576

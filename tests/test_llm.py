@@ -38,6 +38,7 @@ def make_settings(**overrides) -> LLMSettings:
         timeout=5.0,
         max_retries=0,
         max_tokens=256,
+        context_tokens=1_048_576,
         extra_headers={},
     )
     base.update(overrides)

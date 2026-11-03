@@ -1,8 +1,11 @@
 """Bounded, expiring in-memory session store.
 
-The previous implementation kept every session forever in a plain dict, holding
-a full transcript plus a full conversation history each. This store evicts
-expired entries and enforces a hard capacity ceiling.
+Holds conversation state only. Transcript text used to live here too, which meant
+a full copy per session and no reuse across restarts; it now lives in the durable
+cache (``cache.py``).
+
+The previous implementation kept every session forever in a plain dict. This
+store evicts expired entries and enforces a hard capacity ceiling.
 
 Single-process only by design: with multiple worker processes each worker would
 hold its own copy. For a multi-worker deployment, swap this for Redis behind the
@@ -27,7 +30,6 @@ class SessionData:
     chat: Chat | None = None
     video_url: str | None = None
     video_id: str | None = None
-    transcript: str | None = None
     lang_code: str | None = None
     truncated: bool = False
     last_seen: float = field(default_factory=time.monotonic)
@@ -36,7 +38,6 @@ class SessionData:
         self.chat = None
         self.video_url = None
         self.video_id = None
-        self.transcript = None
         self.lang_code = None
         self.truncated = False
 

@@ -32,6 +32,11 @@ _RELEVANT_ENV = (
     "HTTP_TIMEOUT",
     "RATE_LIMIT_PER_MINUTE",
     "SESSION_COOKIE_SECURE",
+    "CACHE_ENABLED",
+    "CACHE_DB",
+    "TRANSCRIPT_CACHE_TTL",
+    "SUMMARY_CACHE_TTL",
+    "FAILURE_CACHE_TTL",
     "DEBUG",
     "HOST",
     "PORT",
@@ -307,3 +312,48 @@ def test_describe_never_leaks_the_key(clean_env) -> None:
 
     assert "super-secret" not in description
     assert "set" in description
+
+
+# --------------------------------------------------------------------------- #
+# Cache settings
+# --------------------------------------------------------------------------- #
+
+
+def test_cache_defaults(clean_env) -> None:
+    clean_env.setenv("LLM_API_KEY", "sk-x")
+
+    settings = load_settings()
+
+    assert settings.cache_enabled is True
+    assert settings.cache_db.name == "cache.sqlite3"
+    assert settings.transcript_cache_ttl == 90 * 24 * 3600
+    assert settings.summary_cache_ttl == 90 * 24 * 3600
+    # Failures are remembered only briefly.
+    assert settings.failure_cache_ttl == 600
+
+
+def test_cache_can_be_disabled_and_relocated(clean_env) -> None:
+    clean_env.setenv("LLM_API_KEY", "sk-x")
+    clean_env.setenv("CACHE_ENABLED", "false")
+    clean_env.setenv("CACHE_DB", "data/my-cache.sqlite3")
+
+    settings = load_settings()
+
+    assert settings.cache_enabled is False
+    assert settings.cache_db.name == "my-cache.sqlite3"
+    assert settings.cache_db.parent.name == "data"
+
+
+def test_cache_ttls_accept_zero_for_never_expire(clean_env) -> None:
+    clean_env.setenv("LLM_API_KEY", "sk-x")
+    clean_env.setenv("TRANSCRIPT_CACHE_TTL", "0")
+
+    assert load_settings().transcript_cache_ttl == 0
+
+
+def test_invalid_cache_ttl_fails_loudly(clean_env) -> None:
+    clean_env.setenv("LLM_API_KEY", "sk-x")
+    clean_env.setenv("FAILURE_CACHE_TTL", "forever")
+
+    with pytest.raises(ConfigError):
+        load_settings()

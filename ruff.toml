@@ -36,3 +36,6 @@ ignore = [
 # are obviously fake test constants.
 "tests/*" = ["ARG001", "ARG002", "ARG005", "C408", "S105", "S106"]
 "conftest.py" = ["ARG001"]
+# NullCache mirrors SummaryCache's signatures so it can be swapped in; its
+# arguments are intentionally unused.
+"cache.py" = ["ARG002"]

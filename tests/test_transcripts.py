@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app import _prepare_transcript
+from app import _prepare_transcript, estimate_tokens
 from transcripts import extract_video_id, parse_json3, parse_srt, parse_vtt
 
 VIDEO_ID = "dQw4w9WgXcQ"
@@ -293,3 +293,107 @@ def test_unavailable_video_is_not_reported_as_a_stale_ytdlp(monkeypatch) -> None
     message = str(excinfo.value)
     assert "unavailable" in message.lower()
     assert "pip install -U yt-dlp" not in message
+
+
+def test_network_failure_is_not_blamed_on_a_stale_ytdlp(monkeypatch) -> None:
+    """A dead proxy must not be reported as "your yt-dlp is old"."""
+    import yt_dlp
+
+    from transcripts import TranscriptFetchError, _fetch_via_ytdlp
+
+    class BoomYDL:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def extract_info(self, *args, **kwargs):
+            raise yt_dlp.utils.DownloadError(
+                "Unable to download API page: ('Unable to connect to proxy', "
+                "NewConnectionError('Failed to establish a new connection: "
+                "[Errno 61] Connection refused'))"
+            )
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", BoomYDL)
+
+    with pytest.raises(TranscriptFetchError) as excinfo:
+        _fetch_via_ytdlp("https://youtu.be/dQw4w9WgXcQ", ["en"], 5.0, None)
+
+    message = str(excinfo.value)
+    assert "Could not reach YouTube" in message
+    assert "pip install -U yt-dlp" not in message
+
+
+# --------------------------------------------------------------------------- #
+# Token budgets (why a character cap alone is unsafe)
+# --------------------------------------------------------------------------- #
+
+
+def test_estimate_tokens_discounts_non_ascii() -> None:
+    ascii_text = "a" * 4_000
+    cyrillic_text = "я" * 4_000
+
+    # Same character count, but Cyrillic costs about twice the tokens.
+    assert estimate_tokens(cyrillic_text) > estimate_tokens(ascii_text) * 1.5
+
+
+def test_estimate_tokens_scales_with_length() -> None:
+    assert estimate_tokens("") == 0
+    short = estimate_tokens("hello world " * 10)
+    long = estimate_tokens("hello world " * 1000)
+    assert long > short > 0
+
+
+def test_token_budget_shrinks_below_the_character_cap() -> None:
+    text = "я" * 100_000  # ~45k tokens, well under a 400k char cap
+    body, truncated = _prepare_transcript(text, 400_000, token_budget=10_000)
+
+    assert truncated is True
+    assert len(body) < 100_000
+    assert estimate_tokens(body) <= 11_000  # roughly the budget, not the cap
+
+
+def test_same_char_cap_admits_less_cyrillic_than_ascii() -> None:
+    """The 2x script penalty is exactly what a character cap gets wrong."""
+    ascii_text = ("word " * 25_000)[:100_000]
+    cyrillic_text = ("слово " * 25_000)[:100_000]
+
+    _, ascii_truncated = _prepare_transcript(ascii_text, 400_000, 30_000)
+    _, cyrillic_truncated = _prepare_transcript(cyrillic_text, 400_000, 30_000)
+
+    assert ascii_truncated is False  # ~25k tokens: fits
+    assert cyrillic_truncated is True  # ~42k tokens: does not
+
+
+def test_character_cap_still_applies_with_a_large_budget() -> None:
+    text = "a" * 5_000
+    body, truncated = _prepare_transcript(text, 1_000, token_budget=1_000_000)
+
+    assert truncated is True
+    assert len(body) <= 1_000
+
+
+def test_no_budget_means_only_the_char_cap() -> None:
+    text = "я" * 5_000
+    body, truncated = _prepare_transcript(text, 1_000)
+
+    assert truncated is True
+    assert len(body) <= 1_000
+
+
+def test_fitting_text_is_not_truncated() -> None:
+    text = "short transcript"
+    body, truncated = _prepare_transcript(text, 400_000, 128_000)
+
+    assert (body, truncated) == (text, False)
+
+
+def test_tiny_budget_still_returns_something() -> None:
+    body, truncated = _prepare_transcript("a" * 10_000, 400_000, token_budget=1)
+
+    assert truncated is True
+    assert body  # never empty

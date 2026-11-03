@@ -148,6 +148,16 @@
 
       if (response.ok && data && data.summary) {
         appendMessage('llm', data.summary);
+        if (data.cache && data.cache.summary === 'hit') {
+          appendNote(
+            'Served from cache — this video was already summarized, so no transcript ' +
+              'was fetched and no model call was made.'
+          );
+        } else if (data.cache && data.cache.transcript === 'hit') {
+          appendNote(
+            'Transcript loaded from cache; only the summary was generated just now.'
+          );
+        }
         if (data.truncated) {
           appendNote(
             `This summary covers only the first ${formatCount(data.transcript_chars)} ` +

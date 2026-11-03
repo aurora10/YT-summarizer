@@ -7,6 +7,9 @@
 # worker *processes* would each see a different set of sessions. Concurrency
 # comes from threads instead. Move to Redis (sessions.SessionStore) before
 # scaling to multiple workers.
+#
+# Mount a volume for the cache, or every redeploy starts cold:
+#   -v yt-cache:/app/data -e CACHE_DB=/app/data/cache.sqlite3
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \

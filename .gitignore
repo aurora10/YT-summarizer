@@ -19,8 +19,14 @@ __pycache__/
 .mypy_cache/
 
 # ---------------------------------------------------------------------------
-# Generated artifacts (the app no longer writes transcripts, but old runs did)
+# Generated artifacts
 # ---------------------------------------------------------------------------
+# SQLite cache database (plus its write-ahead-log sidecars)
+cache.sqlite3
+cache.sqlite3-wal
+cache.sqlite3-shm
+*.sqlite3
+# The app no longer writes transcripts, but old runs did
 transcript_*.txt
 dist/
 build/

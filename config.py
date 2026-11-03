@@ -49,6 +49,9 @@ class ProviderSpec:
     base_url: str | None = None
     requires_key: bool = True
     note: str = ""
+    # Default context window, in tokens. The transcript is clamped to fit this,
+    # so switching provider cannot silently overflow the model.
+    context_tokens: int = 128_000
 
 
 PROVIDERS: dict[str, ProviderSpec] = {
@@ -60,6 +63,7 @@ PROVIDERS: dict[str, ProviderSpec] = {
         # DeepSeek documents both https://api.deepseek.com and .../v1.
         base_url="https://api.deepseek.com",
         note="Other models: deepseek-reasoner",
+        context_tokens=1_048_576,
     ),
     "openai": ProviderSpec(
         label="OpenAI",
@@ -67,6 +71,7 @@ PROVIDERS: dict[str, ProviderSpec] = {
         default_model="gpt-4o-mini",
         key_envs=("OPENAI_API_KEY", "LLM_API_KEY"),
         base_url="https://api.openai.com/v1",
+        context_tokens=128_000,
     ),
     "gemini": ProviderSpec(
         label="Google Gemini",
@@ -74,6 +79,7 @@ PROVIDERS: dict[str, ProviderSpec] = {
         default_model="gemini-2.5-flash",
         key_envs=("GEMINI_API_KEY", "GOOGLE_API_KEY", "LLM_API_KEY"),
         base_url="https://generativelanguage.googleapis.com/v1beta",
+        context_tokens=1_048_576,
     ),
     "anthropic": ProviderSpec(
         label="Anthropic Claude",
@@ -81,6 +87,7 @@ PROVIDERS: dict[str, ProviderSpec] = {
         default_model="claude-sonnet-4-5",
         key_envs=("ANTHROPIC_API_KEY", "LLM_API_KEY"),
         base_url="https://api.anthropic.com/v1",
+        context_tokens=200_000,
     ),
     "openrouter": ProviderSpec(
         label="OpenRouter",
@@ -88,6 +95,7 @@ PROVIDERS: dict[str, ProviderSpec] = {
         default_model="deepseek/deepseek-chat",
         key_envs=("OPENROUTER_API_KEY", "LLM_API_KEY"),
         base_url="https://openrouter.ai/api/v1",
+        context_tokens=128_000,
     ),
     "groq": ProviderSpec(
         label="Groq",
@@ -95,6 +103,7 @@ PROVIDERS: dict[str, ProviderSpec] = {
         default_model="llama-3.3-70b-versatile",
         key_envs=("GROQ_API_KEY", "LLM_API_KEY"),
         base_url="https://api.groq.com/openai/v1",
+        context_tokens=131_072,
     ),
     "ollama": ProviderSpec(
         label="Ollama (local)",
@@ -103,6 +112,8 @@ PROVIDERS: dict[str, ProviderSpec] = {
         key_envs=("OLLAMA_API_KEY", "LLM_API_KEY"),
         base_url="http://localhost:11434/v1",
         requires_key=False,
+        note="Local models are often 8k context; raise LLM_CONTEXT_TOKENS if yours is bigger.",
+        context_tokens=8_192,
     ),
     "custom": ProviderSpec(
         label="Custom OpenAI-compatible endpoint",
@@ -127,6 +138,7 @@ class LLMSettings:
     timeout: float
     max_retries: int
     max_tokens: int
+    context_tokens: int
     extra_headers: dict[str, str]
 
     def describe(self) -> str:
@@ -145,6 +157,11 @@ class Settings:
     transcript_languages: tuple[str, ...]
     http_timeout: float
     rate_limit_per_minute: int
+    cache_enabled: bool
+    cache_db: Path
+    transcript_cache_ttl: int
+    summary_cache_ttl: int
+    failure_cache_ttl: int
     host: str
     port: int
     debug: bool
@@ -278,6 +295,9 @@ def load_llm_settings() -> LLMSettings:
         timeout=_env_float("LLM_TIMEOUT", 120.0, minimum=1.0),
         max_retries=_env_int("LLM_MAX_RETRIES", 3, minimum=0),
         max_tokens=_env_int("LLM_MAX_TOKENS", 4096, minimum=1),
+        context_tokens=_env_int(
+            "LLM_CONTEXT_TOKENS", spec.context_tokens, minimum=1_000
+        ),
         extra_headers=_env_headers("LLM_EXTRA_HEADERS"),
     )
 
@@ -308,6 +328,13 @@ def load_settings() -> Settings:
         transcript_languages=_env_list("TRANSCRIPT_LANGUAGES", ("en", "ru", "fr")),
         http_timeout=_env_float("HTTP_TIMEOUT", 20.0, minimum=1.0),
         rate_limit_per_minute=_env_int("RATE_LIMIT_PER_MINUTE", 20, minimum=1),
+        cache_enabled=_env_bool("CACHE_ENABLED", True),
+        cache_db=BASE_DIR / (_env_str("CACHE_DB", "cache.sqlite3") or "cache.sqlite3"),
+        # Transcripts never really change, so they are kept for a long time.
+        transcript_cache_ttl=_env_int("TRANSCRIPT_CACHE_TTL", 90 * 24 * 3600, minimum=0),
+        summary_cache_ttl=_env_int("SUMMARY_CACHE_TTL", 90 * 24 * 3600, minimum=0),
+        # Failures are cached only briefly, to stop us hammering a blocking provider.
+        failure_cache_ttl=_env_int("FAILURE_CACHE_TTL", 600, minimum=0),
         host=_env_str("HOST", "127.0.0.1") or "127.0.0.1",
         port=_env_int("PORT", 5001, minimum=1),
         # Debug defaults to off: the Werkzeug debugger is remote code execution

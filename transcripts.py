@@ -309,9 +309,29 @@ _UNAVAILABLE_HINTS = (
 )
 
 
+# Connectivity problems are neither "video is gone" nor "yt-dlp is stale", and
+# blaming the version for a dead proxy sends people down the wrong path.
+_NETWORK_HINTS = (
+    "unable to connect to proxy",
+    "failed to establish a new connection",
+    "connection refused",
+    "connection reset",
+    "network is unreachable",
+    "temporary failure in name resolution",
+    "name or service not known",
+    "getaddrinfo failed",
+    "timed out",
+)
+
+
 def _looks_unavailable(message: str) -> bool:
     lowered = message.lower()
     return any(hint in lowered for hint in _UNAVAILABLE_HINTS)
+
+
+def _looks_like_a_network_problem(message: str) -> bool:
+    lowered = message.lower()
+    return any(hint in lowered for hint in _NETWORK_HINTS)
 
 
 # --------------------------------------------------------------------------- #
@@ -390,11 +410,20 @@ def _fetch_via_ytdlp(
     except yt_dlp.utils.DownloadError as exc:
         # Distinguish "this video is gone" (nothing will ever help) from
         # "YouTube changed and yt-dlp is stale" (upgrading fixes it).
-        if _looks_unavailable(str(exc)):
+        message = str(exc)
+
+        if _looks_unavailable(message):
             log.info("Video unavailable via yt-dlp: %s", exc)
             raise NoTranscriptAvailable(
                 "This video is unavailable, private, deleted, or blocked in this "
                 "region. Check the URL in a browser."
+            ) from exc
+
+        if _looks_like_a_network_problem(message):
+            log.warning("Network problem reaching YouTube: %s", exc)
+            raise TranscriptFetchError(
+                "Could not reach YouTube from this server. Check the network or "
+                f"proxy configuration ({exc})"
             ) from exc
 
         # YouTube's anti-bot responses ("The page needs to be reloaded",

@@ -17,6 +17,9 @@ docker-compose*.yml
 *.md
 .DS_Store
 transcript_*.txt
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 dist
 build
 *.spec

@@ -104,19 +104,34 @@ annotated list. The ones that matter most:
 | `LLM_API_KEY` | — | Generic key, fallback for any provider |
 | `LLM_MODEL` | per provider | Override the model |
 | `SECRET_KEY` | *ephemeral* | **Set this in production** — sessions and multi-worker safety depend on it |
-| `MAX_TRANSCRIPT_CHARS` | `400000` | Longer transcripts are truncated, and the summary says so |
+| `MAX_TRANSCRIPT_CHARS` | `400000` | Absolute character ceiling for a transcript |
+| `LLM_CONTEXT_TOKENS` | per provider | Context window; the transcript is clamped to fit |
 | `SESSION_TTL_SECONDS` | `3600` | Conversation lifetime |
 | `RATE_LIMIT_PER_MINUTE` | `20` | Per-session request budget |
+| `CACHE_ENABLED` | `true` | Durable transcript + summary cache |
+| `CACHE_DB` | `cache.sqlite3` | SQLite file for the cache |
+| `TRANSCRIPT_CACHE_TTL` | `90 days` | Transcript reuse window |
+| `FAILURE_CACHE_TTL` | `600` | How long a fetch failure is remembered |
 | `DEBUG` | `false` | Never enable on a reachable address |
 
 ## Running in production
 
 ```bash
 docker build -t yt-summarizer .
-docker run -p 8000:8000 --env-file .env -e SECRET_KEY=... yt-summarizer
+docker run -p 8000:8000 \
+  --env-file .env \
+  -e SECRET_KEY=... \
+  -v yt-cache:/app/data \
+  -e CACHE_DB=/app/data/cache.sqlite3 \
+  yt-summarizer
 ```
 
 The image runs gunicorn as a non-root user with a healthcheck.
+
+> **Mount the cache on a volume.** Without `-v`, `cache.sqlite3` lives inside the
+> container filesystem and every redeploy starts cold — which also throws away the
+> one thing that protects you from a YouTube block. Point `CACHE_DB` at a mounted
+> path.
 
 > **One worker by design.** Conversations live in an in-process store, so multiple
 > gunicorn *worker processes* would each see different sessions. Concurrency comes
@@ -136,12 +151,67 @@ truncation, the session store, the rate limiter, and the LLM adapters against
 mocked HTTP responses — plus route-level tests with the transcript fetcher and
 provider stubbed out.
 
+## Long videos
+
+A transcript is clamped to the smaller of two limits, because they catch
+different problems:
+
+- **`MAX_TRANSCRIPT_CHARS`** (400k) is an absolute ceiling — memory, storage, and
+  absurd inputs.
+- **The model's context window** is the constraint that actually matters. Token
+  cost per character varies about 2× by script: 400k characters of English is
+  roughly 100k tokens, while 400k of Russian is roughly 180k.
+
+So the app estimates tokens for the transcript it actually has and shrinks the
+character cap to fit `LLM_CONTEXT_TOKENS` (per provider, overridable). Truncation
+is reported to the client and the model is told to mention it.
+
+That means a long video never fails on context; the worst case is a summary of
+the first part, clearly labelled. Measured on this project: a 130,874-character
+Russian transcript (~55k tokens) summarizes whole on DeepSeek, which accepted
+136k tokens in testing. Point the same app at an 8k-context local model and it
+truncates to fit instead of erroring.
+
+For content genuinely larger than the window, the upgrade is map-reduce
+summarization: chunk the transcript, summarize each chunk, then summarize the
+chunk summaries. Not implemented — it multiplies model calls by the chunk count.
+
+## Caching
+
+Two caches live in SQLite (`cache.py`), because the two expensive steps have very
+different economics:
+
+| Layer | Key | Why |
+|---|---|---|
+| Transcript | `video_id` | Effectively immutable. Reuse avoids the fetch that can be blocked. |
+| Summary | `sha256(video_id, model, prompt_version, max_chars, lang)` | Tens of thousands of input tokens per call, identical for every user. |
+| Failure | `video_id` | Short-lived, so a blocking provider is not hammered. |
+
+What this buys you:
+
+- **A YouTube block stops being fatal.** Videos already fetched keep working
+  indefinitely; only new videos fail.
+- **A repeat summarize makes zero network calls** and costs zero model tokens.
+- **Raising `MAX_TRANSCRIPT_CHARS` invalidates nothing** — the full transcript is
+  stored and truncated per request.
+- **Follow-up questions still work on a cache hit.** The stored prompt and answer
+  are replayed into a fresh conversation, so context is restored without a model
+  call.
+
+Change the prompt in `SUMMARY_SYSTEM_INSTRUCTION`? Bump `SUMMARY_PROMPT_VERSION`
+in `app.py` and old summaries stop matching. Add `"force_refresh": true` to the
+`/api/process_video` body to bypass both caches for a single request.
+
+The cache is best-effort: if the database cannot be opened, the app logs it and
+runs uncached rather than failing.
+
 ## Architecture
 
 ```
 app.py          Flask app factory, routes, error → HTTP mapping, security headers
 config.py       Environment → Settings; the provider registry lives here
 llm.py          Provider-agnostic Chat interface + OpenAI/Gemini/Anthropic adapters
+cache.py        SQLite caches for transcripts, summaries and recent failures
 transcripts.py  Video id extraction, caption fetching, pure subtitle parsers
 sessions.py     Bounded TTL session store + rate limiter
 static/         app.js, style.css, vendor/ (pinned marked + DOMPurify)

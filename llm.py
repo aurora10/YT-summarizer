@@ -163,8 +163,17 @@ class Provider:
 
     # -- public API --------------------------------------------------------- #
 
-    def start_chat(self, system_instruction: str = "") -> Chat:
-        return Chat(self, system_instruction)
+    def start_chat(
+        self,
+        system_instruction: str = "",
+        history: Iterable[Turn] | None = None,
+    ) -> Chat:
+        """Start a conversation, optionally seeded with prior turns.
+
+        Seeding matters for the summary cache: replaying the stored prompt and
+        answer restores follow-up context without paying for a model call.
+        """
+        return Chat(self, system_instruction, history)
 
     def complete(self, system_instruction: str, turns: Sequence[Turn]) -> str:
         """Run one completion, retrying transient failures with backoff."""
